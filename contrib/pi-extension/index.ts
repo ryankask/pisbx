@@ -22,7 +22,6 @@ import { sandboxFooter } from "./footer.ts";
 
 const ACTIVE = process.env.PISBX_ACTIVE === "1";
 const SETTINGS_PATH = process.env.PISBX_SETTINGS;
-const STATUS_KEY = "pisbx";
 
 type Settings = {
 	filesystem?: {
@@ -98,17 +97,14 @@ export default function (pi: ExtensionAPI) {
 	if (!ACTIVE) return;
 
 	// The lock rides on the footer's first line rather than taking its own:
-	// setStatus() always renders a separate line. If the custom footer throws,
-	// fall back to the status line so the indicator never disappears.
+	// setStatus() always renders a separate line. No fallback on purpose — if
+	// this throws, pi's footer is the thing that needs fixing, and a silent
+	// switch to a status line would hide that.
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
-		try {
-			ctx.ui.setFooter((_tui, theme, footerData) =>
-				sandboxFooter(ctx, theme, footerData, { suffix: " 🔒" }),
-			);
-		} catch {
-			ctx.ui.setStatus(STATUS_KEY, "🔒 sandbox");
-		}
+		ctx.ui.setFooter((_tui, theme, footerData) =>
+			sandboxFooter(ctx, theme, footerData, { suffix: " 🔒" }),
+		);
 	});
 
 	pi.on("before_agent_start", async (event) => {
