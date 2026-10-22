@@ -2,8 +2,14 @@
 
 An extension and a skill that make the sandbox visible to the agent.
 
-- a **lock in the footer** (`🔒 sandbox`) so a session is never mistaken for an
-  unsandboxed one
+- a **lock on the footer's first line** (`~/Projects/pisbx (main) 🔒`, in the
+  same dim colour) so a session is never mistaken for an unsandboxed one
+  without paying a footer line for it
+- the footer reproduces pi's two default lines: `ctx.ui.setStatus()` can only
+  add a line of its own, and the default footer component needs the session
+  object an extension does not get. `contrib/pi-extension/footer.ts` mirrors
+  pi 1.4.0's formatting and lists the differences in its header comment
+  (no `(sub)` subscription marker, no `(auto)` indicator, no routed-model arrow)
 - a **system-prompt paragraph** saying the boundary is kernel-enforced, that
   approvals cannot widen it, and that `EPERM` means "report, don't retry"
 - a **`/pisbx` command** printing what the policy actually grants

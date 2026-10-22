@@ -4,8 +4,8 @@
  * A no-op unless `PISBX_ACTIVE=1`, which pisbx sets for the sandboxed process.
  * It does three things, all of them cheap:
  *
- *   1. a lock in the footer, so the session is never mistaken for an
- *      unsandboxed one;
+ *   1. a lock on the footer's first line, so the session is never mistaken
+ *      for an unsandboxed one, without adding a line;
  *   2. a paragraph in the system prompt saying the boundary is enforced by the
  *      kernel, not by approvals, and what to do about `EPERM`;
  *   3. `/pisbx`, which prints what the policy actually grants.
@@ -18,6 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { sandboxFooter } from "./footer.ts";
 
 const ACTIVE = process.env.PISBX_ACTIVE === "1";
 const SETTINGS_PATH = process.env.PISBX_SETTINGS;
@@ -96,8 +97,18 @@ human add it to \`network.allowedDomains\` or pass \`--domains\` for the run.
 export default function (pi: ExtensionAPI) {
 	if (!ACTIVE) return;
 
+	// The lock rides on the footer's first line rather than taking its own:
+	// setStatus() always renders a separate line. If the custom footer throws,
+	// fall back to the status line so the indicator never disappears.
 	pi.on("session_start", async (_event, ctx) => {
-		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, "🔒 sandbox");
+		if (!ctx.hasUI) return;
+		try {
+			ctx.ui.setFooter((_tui, theme, footerData) =>
+				sandboxFooter(ctx, theme, footerData, { suffix: " 🔒" }),
+			);
+		} catch {
+			ctx.ui.setStatus(STATUS_KEY, "🔒 sandbox");
+		}
 	});
 
 	pi.on("before_agent_start", async (event) => {
