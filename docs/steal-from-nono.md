@@ -15,12 +15,12 @@ cannot explain?
 
 ## Summary
 
-| # | Idea | Why | Effort | Priority |
+| # | Idea | Status | Why | Effort | Priority |
 |---|---|---|---|---|
-| 1 | Phantom credentials + reverse proxy | pi's real API key currently sits inside the sandbox | large | P1 |
+| 1 | Phantom credentials + reverse proxy | **API-key providers done; OAuth open** | large | P1 |
 | 2 | Name the secret classes, and finish the persistence deny-list | the agent can arm pi's next session through files we forgot | small | P1 |
-| 3 | Runtime `pisbx why --path --op` | static `--explain` cannot answer "can I write this file now?" | small | P2 |
-| 4 | A pi extension + skill shipped as source | pi does not know it is sandboxed; every EPERM is a mystery | small | P2 |
+| 3 | Runtime `pisbx why --path --op` | **done, with `--probe`** | small | P2 |
+| 4 | A pi extension + skill shipped as source | **done, in `contrib/pi-extension`** | small | P2 |
 | 5 | L7 endpoint rules on credential routes | hostname is the wrong unit for an API key | medium | P3 |
 
 Already done, from the nono comparison: `NODE_USE_ENV_PROXY=1` on the srt child.
@@ -31,6 +31,13 @@ and the fix in `src/srt.rs`. Keep it pinned with a selftest.
 ---
 
 ## 1. Phantom credentials and a reverse proxy
+
+**Partly done.** `[pisbx.credentials.<route>]` + `op read`/`env:`/`file:`
+secrets, a localhost proxy that injects the real header, a phantom the sandbox
+holds instead, and a fixed `credential-proxy-port` so a static `models.json`
+base URL can name it. OAuth providers are explicitly out of scope, and the
+proxy needs a `Content-Length` body. Provider registration by an extension —
+so the base URL never has to be hardcoded — is the natural next step.
 
 ### What nono does
 

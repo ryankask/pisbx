@@ -99,7 +99,7 @@ pub struct Network {
 /// Settings about how pisbx runs pi. Never forwarded to srt: `trust` becomes
 /// `--no-approve` (or not), and `env` is applied to the process srt launches.
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Pisbx {
     /// Load project `.pi` extensions, skills and prompts without asking.
     pub trust: bool,
@@ -109,6 +109,11 @@ pub struct Pisbx {
     /// Variables removed from the environment the sandboxed process inherits,
     /// so a token in your shell does not travel into the sandbox.
     pub unset: Vec<String>,
+    /// Provider routes whose real secret stays outside the sandbox.
+    pub credentials: BTreeMap<String, crate::credentials::Route>,
+    /// Fixed proxy port, for a `models.json` base URL that cannot interpolate
+    /// an ephemeral one.
+    pub credential_proxy_port: Option<u16>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
@@ -135,11 +140,23 @@ impl Config {
         chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
 
+    /// Names pisbx sets itself; letting a config shadow them would forge the
+    /// session facts the pi extension reads.
+    fn reserved(name: &str) -> bool {
+        name.starts_with("PISBX_")
+    }
+
     fn validate(&self, source: &Path) -> Result<(), String> {
         for (index, name) in self.pisbx.unset.iter().enumerate() {
             if !Self::valid_name(name) {
                 return Err(format!(
                     "{}: pisbx.unset[{index}]: `{name}` is not an environment variable name",
+                    source.display()
+                ));
+            }
+            if Self::reserved(name) {
+                return Err(format!(
+                    "{}: pisbx.unset[{index}]: `{name}` is reserved by pisbx",
                     source.display()
                 ));
             }
@@ -150,7 +167,24 @@ impl Config {
                 ));
             }
         }
+        for (name, route) in &self.pisbx.credentials {
+            if route.name != *name {
+                return Err(format!(
+                    "{}: pisbx.credentials.{name}: name must be `{name}`",
+                    source.display()
+                ));
+            }
+            route
+                .validate()
+                .map_err(|error| format!("{}: {error}", source.display()))?;
+        }
         for name in self.pisbx.env.keys() {
+            if Self::reserved(name) {
+                return Err(format!(
+                    "{}: pisbx.env: `{name}` is reserved by pisbx",
+                    source.display()
+                ));
+            }
             if !Self::valid_name(name) {
                 return Err(format!(
                     "{}: pisbx.env: `{name}` is not an environment variable name",
@@ -188,8 +222,12 @@ pub fn default_path() -> Option<PathBuf> {
 /// Parse the policy file. Unknown keys inside `filesystem` or `network` are an
 /// error; unknown top-level keys are passed through to srt.
 pub fn parse(text: &str, source: &Path) -> Result<Config, String> {
-    let config: Config =
+    let mut config: Config =
         toml::from_str(text).map_err(|error| format!("{}: {error}", source.display()))?;
+    // A credential route is named by its table key, not by a field inside it.
+    for (name, route) in config.pisbx.credentials.iter_mut() {
+        route.name = name.clone();
+    }
     config.validate(source)?;
     Ok(config)
 }
@@ -315,6 +353,14 @@ PI_CLIPBOARD_OSC52 = "1"
     fn a_variable_cannot_be_set_and_unset() {
         let error = p("[pisbx]\nunset = [\"FOO\"]\n[pisbx.env]\nFOO = \"1\"\n").unwrap_err();
         assert!(error.contains("also set"), "{error}");
+    }
+
+    #[test]
+    fn pisbx_names_cannot_be_shadowed() {
+        let error = p("[pisbx.env]\nPISBX_ACTIVE = \"0\"\n").unwrap_err();
+        assert!(error.contains("reserved"), "{error}");
+        let error = p("[pisbx]\nunset = [\"PISBX_SETTINGS\"]\n").unwrap_err();
+        assert!(error.contains("reserved"), "{error}");
     }
 
     #[test]

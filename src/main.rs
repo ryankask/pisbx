@@ -11,12 +11,14 @@
 
 mod cli;
 mod config;
+mod credentials;
 mod floor;
 mod init;
 mod paths;
 mod policy;
 mod selftest;
 mod srt;
+mod why;
 
 use anyhow::{Context, Result};
 use cli::Cli;
@@ -25,6 +27,25 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::exit;
+
+/// Probe used by `--why --probe`: the kernel's answer, with no side effects
+/// beyond removing a file the probe itself created.
+const PROBE_SCRIPT: &str = r#"
+import errno, os, sys
+
+kind, path = sys.argv[1], sys.argv[2]
+flags = os.O_RDONLY if kind == "read" else (os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+created = kind == "write" and not os.path.exists(path)
+
+try:
+    fd = os.open(path, flags)
+    os.close(fd)
+    if created:
+        os.unlink(path)
+    print("allowed")
+except OSError as error:
+    print("denied", errno.errorcode.get(error.errno, str(error.errno)))
+"#;
 
 const EXIT_USAGE: i32 = 64;
 const EXIT_CONFIG: i32 = 65;
@@ -506,6 +527,67 @@ fn run() -> Result<i32, Failure> {
         let settings = resolved.policy.to_json();
         let keep_temp = cli.keep_temp || env_flag("PISBX_KEEP_TEMP", false);
 
+        if let Some(query) = &cli.why {
+            let op = match cli.op.as_deref() {
+                None => why::Op::Read,
+                Some(text) => match why::Op::parse(text) {
+                    Some(op) => op,
+                    None => {
+                        return Err(Failure::usage(format!(
+                            "--op must be read or write, not `{text}`"
+                        )))
+                    }
+                },
+            };
+
+            let (path, verdict) = why::evaluate(&resolved.policy, query, op, &resolved.target);
+            println!("path    {path}");
+            println!("op      {}", op.label());
+            match &verdict {
+                why::Verdict::Allowed(Some(entry)) => println!(
+                    "result  allowed\nby      {} ({})",
+                    entry.value,
+                    entry.source.label()
+                ),
+                why::Verdict::Allowed(None) => {
+                    println!("result  allowed\nby      (no entry; nothing denies it)")
+                }
+                why::Verdict::Denied(Some(entry)) => println!(
+                    "result  denied\nby      {} ({})",
+                    entry.value,
+                    entry.source.label()
+                ),
+                why::Verdict::Denied(None) => {
+                    println!("result  denied\nby      (nothing grants it)")
+                }
+            }
+
+            if cli.probe {
+                let file = SettingsFile::write(&settings, keep_temp)
+                    .map_err(|error| Failure::usage(format!("{error:#}")))?;
+                let script = SettingsFile::write(PROBE_SCRIPT, keep_temp)
+                    .map_err(|error| Failure::usage(format!("{error:#}")))?;
+                match srt::capture_args(
+                    file.path(),
+                    &[
+                        "python3",
+                        &script.path().to_string_lossy(),
+                        op.label(),
+                        &path,
+                    ],
+                    &resolved.target,
+                ) {
+                    Ok(output) => {
+                        let line = output.lines().last().unwrap_or("").trim();
+                        println!("probe   {line}");
+                    }
+                    Err(error) => println!("probe   could not run: {error}"),
+                }
+            }
+
+            return Ok(if verdict.is_allowed() { 0 } else { 1 });
+        }
+
         if cli.explain {
             print!(
                 "{}",
@@ -568,7 +650,60 @@ fn run() -> Result<i32, Failure> {
         }
         argv.extend(tail);
 
-        let status = srt::run(file.path(), &argv, &resolved.env, &resolved.unset)
+        // Facts about this session, for the pi extension. Appended last so a
+        // config entry cannot shadow them (and config rejects PISBX_* anyway).
+        // Credential routes: the real secret never enters the sandbox.
+        let mut env = resolved.env.clone();
+        if let Some(config) = loaded.as_ref() {
+            if !config.pisbx.credentials.is_empty() {
+                if config.network.rest.get("allowLocalBinding") != Some(&toml::Value::Boolean(true))
+                {
+                    return Err(Failure::config(
+                        "credential routes need `network.allowLocalBinding = true`, so the sandbox may reach the proxy on 127.0.0.1",
+                    ));
+                }
+                let routes: Vec<credentials::Route> =
+                    config.pisbx.credentials.values().cloned().collect();
+                let proxy = credentials::Proxy::start_on(
+                    config.pisbx.credential_proxy_port.unwrap_or(0),
+                    routes,
+                )
+                .map_err(|error| Failure::config(format!("credential proxy: {error:#}")))?;
+                env.push(("PISBX_CREDPROXY".to_string(), "1".to_string()));
+                env.push(("PISBX_PHANTOM".to_string(), proxy.phantom.clone()));
+                for (name, route) in &config.pisbx.credentials {
+                    env.push((
+                        format!("PISBX_CREDPROXY_{}", name.to_ascii_uppercase()),
+                        proxy.base_url(name),
+                    ));
+                    if let Some(variable) = &route.env {
+                        env.push((variable.clone(), proxy.phantom.clone()));
+                    }
+                }
+                println!(
+                    "pisbx: credential proxy on 127.0.0.1:{} for {} route(s)",
+                    proxy.port,
+                    config.pisbx.credentials.len()
+                );
+                // Keep it alive for the session.
+                std::mem::forget(proxy);
+            }
+        }
+        env.push(("PISBX_ACTIVE".to_string(), "1".to_string()));
+        env.push((
+            "PISBX_VERSION".to_string(),
+            env!("CARGO_PKG_VERSION").to_string(),
+        ));
+        env.push((
+            "PISBX_SETTINGS".to_string(),
+            file.path().display().to_string(),
+        ));
+        env.push((
+            "PISBX_POLICY".to_string(),
+            config_path.display().to_string(),
+        ));
+
+        let status = srt::run(file.path(), &argv, &env, &resolved.unset)
             .map_err(|error| Failure::dependency(format!("could not run srt: {error}")))?;
         Ok(status.code().unwrap_or(1))
     }
@@ -680,6 +815,8 @@ mod tests {
                 .into_iter()
                 .collect(),
                 unset: vec!["GITHUB_TOKEN".to_string()],
+                credentials: Default::default(),
+                credential_proxy_port: None,
             },
             ..config::Config::default()
         };

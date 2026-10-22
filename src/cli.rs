@@ -17,12 +17,15 @@ const VALUE_FLAGS: &[&str] = &[
     "--deny-write",
     "--domains",
     "--allow-unix-sockets",
+    "--why",
+    "--op",
 ];
 
 const BOOL_FLAGS: &[&str] = &[
     "--clipboard",
     "--no-clipboard",
     "--allow-git-config",
+    "--probe",
     "--read-only",
     "--init",
     "--force",
@@ -86,6 +89,18 @@ pub struct Cli {
     /// Allow writes to .git/config (hooks stay blocked)
     #[arg(long = "allow-git-config")]
     pub allow_git_config: bool,
+
+    /// Explain whether this path may be accessed, then exit
+    #[arg(long, value_name = "PATH")]
+    pub why: Option<String>,
+
+    /// Operation for --why: read or write (default: read)
+    #[arg(long, value_name = "OP")]
+    pub op: Option<String>,
+
+    /// With --why, ask the kernel inside a real sandbox instead of reading the policy
+    #[arg(long)]
+    pub probe: bool,
 
     /// Allow the pasteboard
     #[arg(long)]
@@ -258,6 +273,15 @@ mod tests {
     fn missing_value_is_a_usage_error() {
         let error = parse(["--allow-write"].map(OsString::from)).unwrap_err();
         assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn why_flags() {
+        let (cli, tail) = p(&["--why", "~/.ssh", "--op", "write", "--probe"]);
+        assert_eq!(cli.why.as_deref(), Some("~/.ssh"));
+        assert_eq!(cli.op.as_deref(), Some("write"));
+        assert!(cli.probe);
+        assert!(tail.is_empty());
     }
 
     #[test]

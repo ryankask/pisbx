@@ -152,6 +152,38 @@ environment for the sandboxed process
   GITHUB_TOKEN   unset (config)
 ```
 
+### Credentials that stay outside the sandbox
+
+pi needs a model key, and anything pi can read a prompt-injected agent can read.
+A credential route keeps the real secret in this process and gives the sandbox a
+phantom instead:
+
+```toml
+[network]
+allowLocalBinding = true          # required: the sandbox must reach 127.0.0.1
+
+[pisbx]
+credential-proxy-port = 8712      # fixed, so a static models.json can name it
+
+[pisbx.credentials.openai]
+upstream = "https://api.openai.com"
+secret = "op://Private/OpenAI/api-key"   # or env:NAME, or file:PATH
+env = "OPENAI_API_KEY"                   # pi finds the phantom here
+```
+
+At launch pisbx resolves the secret with `op read`, starts a proxy on
+`127.0.0.1:8712`, exports `PISBX_CREDPROXY_OPENAI=http://127.0.0.1:8712/openai`
+and puts the phantom in `OPENAI_API_KEY`. Point the provider's `baseUrl` at that
+route in `models.json`; every request carries the phantom, the proxy swaps it for
+the real key on the way out, and a request without the phantom gets `403`
+instead of being forwarded.
+
+Scope of a first cut: **API-key providers only**. OAuth providers (pi's
+`openai-codex`, for one) keep refresh tokens in `auth.json` and are not proxied.
+Requests need a `Content-Length` body; chunked uploads are refused. The proxy
+needs `curl` on `PATH` — present on every macOS install — and `allowLocalBinding`
+must be on, which pisbx enforces rather than assuming.
+
 ## Per-project policy
 
 There is no workspace config file, by design. Deltas are flags, in whatever

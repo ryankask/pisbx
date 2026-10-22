@@ -50,6 +50,22 @@ pub fn run(
     command.status()
 }
 
+/// Run a command inside the sandbox and return its combined output.
+pub fn capture_args(settings: &Path, args: &[&str], cwd: &Path) -> std::io::Result<String> {
+    let output = std::process::Command::new("srt")
+        .arg("-s")
+        .arg(settings)
+        .env(NODE_ENV_PROXY.0, NODE_ENV_PROXY.1)
+        .arg("--")
+        .args(args)
+        .current_dir(cwd)
+        .output()?;
+
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    Ok(text)
+}
+
 /// Run a shell snippet inside the sandbox and return its combined output.
 pub fn capture(settings: &Path, cwd: &Path, script: &str) -> std::io::Result<String> {
     let output = std::process::Command::new("srt")
