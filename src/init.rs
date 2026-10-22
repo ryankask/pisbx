@@ -296,6 +296,12 @@ pub fn render(draft: &Draft) -> String {
     out.push_str("# means the agent sees whatever you copied, so this ships commented out.\n");
     out.push_str("# mach-lookup = [\"com.apple.pasteboard.1\", \"com.apple.lsd.mapdb\", \"com.apple.lsd.modifydb\"]\n");
 
+    out.push_str("\n# Raw srt settings, merged add-only: lists are unioned and a scalar here\n");
+    out.push_str("# never overrides a decision pisbx made (pty on, apple events off).\n");
+    out.push_str("# [srt.network]\n");
+    out.push_str("# allowLocalBinding = true            # dev servers on localhost\n");
+    out.push_str("# deniedResolvedAddresses = [\"10.0.0.0/8\", \"192.168.0.0/16\"]\n");
+
     out
 }
 

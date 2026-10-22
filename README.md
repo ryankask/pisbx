@@ -102,6 +102,25 @@ allow-unix-sockets = ["~/Library/Group Containers/<TEAM>.<app>/t/agent.sock"]
 the environment. An inherited `PISBX_DOMAINS` from an outer session cannot
 quietly widen your policy.
 
+### Anything else srt can do
+
+srt has more knobs than pisbx has flags. A `[srt]` table is merged into the
+generated settings **add-only**: lists are unioned, objects merged, and a scalar
+there never overrides something pisbx already decided.
+
+```toml
+[srt.network]
+allowLocalBinding = true                 # dev servers on localhost
+deniedResolvedAddresses = ["10.0.0.0/8", "192.168.0.0/16"]
+
+[srt.network.deniedDomainReasons]
+"github.com:22" = "SSH to GitHub goes through git; a bare ssh is not proxied."
+```
+
+Add-only is the safety property: `allowPty = false` or an emptied `denyWrite`
+cannot weaken the profile. `pisbx --explain` lists each passthrough entry and
+marks the ones that did not apply (`ignored: pisbx already decided`).
+
 ## Per-project policy
 
 There is no workspace config file, by design. Deltas are flags, in whatever

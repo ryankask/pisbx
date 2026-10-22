@@ -76,6 +76,9 @@ pub struct Policy {
     pub mach_lookup: Vec<Entry>,
     pub unix_sockets: Vec<Entry>,
     pub allow_git_config: bool,
+    /// Raw srt settings merged in add-only: arrays are unioned, objects merge,
+    /// scalars never override what pisbx already decided.
+    pub extras: serde_json::Value,
     pub read_only: bool,
     pub trust: bool,
 }
@@ -125,6 +128,68 @@ fn values(entries: &[Entry]) -> Vec<String> {
     entries.iter().map(|entry| entry.value.clone()).collect()
 }
 
+/// Merge `extra` into `target` add-only.
+///
+/// Arrays are unioned and objects recurse, so a passthrough entry can widen
+/// what the policy already allows but never remove a deny or turn off a
+/// built-in decision such as `allowPty`.
+pub fn merge_extra(target: &mut serde_json::Value, extra: &serde_json::Value) {
+    match (target, extra) {
+        (serde_json::Value::Object(target), serde_json::Value::Object(extra)) => {
+            for (key, value) in extra {
+                match target.get_mut(key) {
+                    Some(existing) => merge_extra(existing, value),
+                    None => {
+                        target.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (serde_json::Value::Array(target), serde_json::Value::Array(extra)) => {
+            for value in extra {
+                if !target.contains(value) {
+                    target.push(value.clone());
+                }
+            }
+        }
+        // Scalars, and any shape mismatch, keep what pisbx decided.
+        _ => {}
+    }
+}
+
+/// Flatten a passthrough value alongside the settings it was merged into, so
+/// `--explain` can say whether each entry actually took effect.
+fn flatten(
+    value: &serde_json::Value,
+    merged: &serde_json::Value,
+    prefix: &str,
+    out: &mut Vec<(String, String, bool)>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                let merged_child = merged.get(key).unwrap_or(&serde_json::Value::Null);
+                flatten(child, merged_child, &path, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            let applied = match merged {
+                serde_json::Value::Array(merged_items) => {
+                    items.iter().all(|item| merged_items.contains(item))
+                }
+                _ => false,
+            };
+            out.push((prefix.to_string(), value.to_string(), applied));
+        }
+        scalar => out.push((prefix.to_string(), scalar.to_string(), merged == scalar)),
+    }
+}
+
 impl Policy {
     pub fn settings(&self) -> Settings {
         Settings {
@@ -151,7 +216,10 @@ impl Policy {
     }
 
     pub fn to_json(&self) -> String {
-        let mut json = serde_json::to_string_pretty(&self.settings())
+        let mut value = serde_json::to_value(self.settings())
+            .expect("settings contain no values JSON cannot encode");
+        merge_extra(&mut value, &self.extras);
+        let mut json = serde_json::to_string_pretty(&value)
             .expect("settings contain no values JSON cannot encode");
         json.push('\n');
         json
@@ -201,6 +269,27 @@ impl Policy {
         section(&mut out, "network denied", &self.denied_domains, "none");
         section(&mut out, "mach lookups", &self.mach_lookup, "none");
         section(&mut out, "unix sockets", &self.unix_sockets, "none");
+
+        if !self.extras.is_null() {
+            let merged: serde_json::Value =
+                serde_json::from_str(&self.to_json()).unwrap_or(serde_json::Value::Null);
+            let mut flat = Vec::new();
+            flatten(&self.extras, &merged, "", &mut flat);
+            out.push_str("\nsrt settings passed through (add-only)\n");
+            let width = flat
+                .iter()
+                .map(|(path, _, _)| path.len())
+                .max()
+                .unwrap_or(0);
+            for (path, value, applied) in &flat {
+                let note = if *applied {
+                    ""
+                } else {
+                    "  (ignored: pisbx already decided)"
+                };
+                out.push_str(&format!("  {path:<width$}  {value}{note}\n", width = width));
+            }
+        }
 
         out.push_str("\nflags\n");
         out.push_str(&format!(
@@ -360,6 +449,89 @@ mod tests {
         assert!(text.contains("mode       read-only"), "{text}");
         assert!(text.contains("git config read-only"), "{text}");
         assert!(text.contains("run `pisbx --init`"), "{text}");
+    }
+
+    fn with_extras(json: &str) -> Policy {
+        Policy {
+            extras: serde_json::from_str(json).unwrap(),
+            ..Policy::default()
+        }
+    }
+
+    #[test]
+    fn passthrough_adds_settings_we_do_not_set() {
+        let value = parse(&with_extras(r#"{"network":{"allowLocalBinding":true}}"#));
+        assert_eq!(value["network"]["allowLocalBinding"], Value::Bool(true));
+    }
+
+    #[test]
+    fn passthrough_cannot_flip_a_built_in_decision() {
+        let policy = Policy {
+            allow_write: entries(&["/target"], Source::Builtin),
+            deny_write: entries(&["/target/.git"], Source::Builtin),
+            ..with_extras(
+                r#"{"allowPty":false,"allowAppleEvents":true,
+                    "filesystem":{"denyWrite":[]}}"#,
+            )
+        };
+        let value = parse(&policy);
+        assert_eq!(value["allowPty"], Value::Bool(true), "pty stays on");
+        assert_eq!(
+            value["allowAppleEvents"],
+            Value::Bool(false),
+            "apple events stay off"
+        );
+        // denyWrite is not emptied: the union keeps what pisbx decided.
+        assert_eq!(value["filesystem"]["denyWrite"][0], "/target/.git");
+    }
+
+    #[test]
+    fn passthrough_unions_arrays_rather_than_replacing() {
+        let policy = Policy {
+            allow_write: entries(&["/target"], Source::Builtin),
+            ..with_extras(r#"{"filesystem":{"allowWrite":["/extra"]}}"#)
+        };
+        let value = parse(&policy);
+        let writes = value["filesystem"]["allowWrite"].as_array().unwrap();
+        assert_eq!(writes.len(), 2, "{writes:?}");
+        assert!(writes.iter().any(|entry| entry == "/target"));
+        assert!(writes.iter().any(|entry| entry == "/extra"));
+    }
+
+    #[test]
+    fn passthrough_merges_nested_maps() {
+        let value = parse(&with_extras(
+            r#"{"network":{"deniedDomainReasons":{"github.com:22":"use https"}}}"#,
+        ));
+        assert_eq!(
+            value["network"]["deniedDomainReasons"]["github.com:22"],
+            "use https"
+        );
+    }
+
+    #[test]
+    fn explain_lists_passthrough_entries() {
+        let text =
+            with_extras(r#"{"network":{"allowLocalBinding":true}}"#).explain(Path::new("/t"), None);
+        assert!(text.contains("srt settings passed through"), "{text}");
+        assert!(text.contains("network.allowLocalBinding"), "{text}");
+        assert!(!text.contains("ignored"), "{text}");
+    }
+
+    #[test]
+    fn explain_flags_passthrough_entries_that_did_not_apply() {
+        let text = with_extras(r#"{"allowPty":false,"network":{"allowLocalBinding":true}}"#)
+            .explain(Path::new("/t"), None);
+        let pty = text
+            .lines()
+            .find(|line| line.contains("allowPty"))
+            .expect("allowPty line");
+        assert!(pty.contains("ignored"), "{pty}");
+        let local = text
+            .lines()
+            .find(|line| line.contains("allowLocalBinding"))
+            .expect("allowLocalBinding line");
+        assert!(!local.contains("ignored"), "{local}");
     }
 
     #[test]

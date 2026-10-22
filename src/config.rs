@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_PATH: &str = ".config/pisbx/config.toml";
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
     #[serde(default)]
@@ -30,6 +30,9 @@ pub struct Config {
     pub allow_unix_sockets: Vec<String>,
     #[serde(default)]
     pub allow_git_config: bool,
+    /// Raw srt settings, merged add-only into the generated document.
+    #[serde(default)]
+    pub srt: Option<toml::Value>,
 }
 
 pub fn default_path() -> Option<PathBuf> {
@@ -87,6 +90,31 @@ mach-lookup = ["com.example.notes.*"]
         assert_eq!(config.domains, ["api.openai.com", "*.openai.com"]);
         assert_eq!(config.denied_domains, ["evil.example"]);
         assert_eq!(config.mach_lookup, ["com.example.notes.*"]);
+    }
+
+    #[test]
+    fn reads_the_srt_passthrough_table() {
+        let config = p(r#"
+[srt]
+allowPty = true
+
+[srt.network]
+allowLocalBinding = true
+deniedResolvedAddresses = ["10.0.0.0/8"]
+
+[srt.network.deniedDomainReasons]
+"github.com:22" = "SSH pushes are blocked; use an https remote"
+"#)
+        .unwrap();
+        let srt = config.srt.expect("passthrough table");
+        assert_eq!(
+            srt["network"]["allowLocalBinding"],
+            toml::Value::Boolean(true)
+        );
+        assert_eq!(
+            srt["network"]["deniedDomainReasons"]["github.com:22"],
+            toml::Value::String("SSH pushes are blocked; use an https remote".into())
+        );
     }
 
     #[test]

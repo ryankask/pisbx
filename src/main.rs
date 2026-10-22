@@ -337,6 +337,12 @@ fn resolve(
         );
     }
 
+    // Raw srt settings from the `[srt]` table, merged add-only at render time.
+    policy.extras = match loaded.and_then(|config| config.srt.as_ref()) {
+        Some(srt) => serde_json::to_value(srt).unwrap_or(serde_json::Value::Null),
+        None => serde_json::Value::Null,
+    };
+
     let clipboard = cli
         .clipboard()
         .unwrap_or_else(|| env_flag("PISBX_CLIPBOARD", false));
