@@ -116,6 +116,14 @@ to `op read`. Scope and endpoint rules come later; the security property is
 
 ## 2. Name the secret classes, and finish the persistence deny-list
 
+**Done** — the extra agent-directory paths are in the floor, `--init` names the
+secret classes, and `--selftest` asserts `mcp.json` and `SYSTEM.md`. Doing it
+exposed a bug worth recording: `paths::expand` only produced the resolved
+spelling when the path already existed, so every deny under the symlinked
+`~/.pi` silently did nothing until something else created the file. Resolution
+now walks up to the deepest existing ancestor, which is also what makes a glob
+deny work on files that are not there yet.
+
 nono's built-in `default` profile is worth reading as a checklist, not as
 config to copy (`crates/nono-cli/data/policy.json`). Its required groups deny:
 `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`,

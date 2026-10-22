@@ -36,16 +36,25 @@ Nothing is allowed that pi does not need to start.
 | Surface | Default |
 |---|---|
 | Writes | the workspace, `~/.pi/agent`, `/private/tmp`, `/private/var/folders` |
-| Always denied writes | `~/.pi/agent/{extensions,install,settings.json,keybindings.json,models-store.json,npm,web-search-cache}`, `~/.npm/_logs`, `~/.claude/debug`, the pisbx binary, the pisbx config |
+| Always denied writes | `~/.pi/agent/{extensions,install,mcp.json,skills,SYSTEM.md,APPEND_SYSTEM.md,AGENTS.md,AGENTS.override.md,CLAUDE.md,prompts,settings.json,keybindings.json,models.json,models-store.json,npm,web-search-cache}`, `~/.npm/_logs`, `~/.claude/debug`, the pisbx binary, the pisbx config |
 | Reads | **home is closed**; open: the workspace, `~/.pi`, pi's runtime, and the directories on `$PATH` that live under `$HOME` |
 | Network | none |
 | Clipboard | off |
 | Apple Events | off — allowing them is an unsandboxed code-execution path |
 | Project resources | refused (`--no-approve`), so a cloned repo cannot load extensions before you look |
 
-Denying writes to `extensions/` and `install/` is the highest-value line in the
-file: either one writable means a sandboxed agent can arm the next session with
-code it chose. The floor exists to let a session run, not to let it persist.
+Denying writes to `extensions/`, `install/`, `mcp.json` and `settings.json` is
+the highest-value part of the file: any of them writable means a sandboxed agent
+can arm the next session with code it chose. `SYSTEM.md`, `APPEND_SYSTEM.md`,
+`AGENTS.md` and `skills/` are the same argument for instructions — a write there
+is durable prompt injection. The floor exists to let a session run, not to let
+it persist.
+
+`~/.pi/agent/auth.json` is the deliberate exception: pi rewrites it when OAuth
+tokens refresh, so it stays writable, and readable, inside the sandbox. A
+prompt-injected agent can therefore read the model credential. The domain
+allowlist bounds where it can be sent, and closing it properly needs credential
+masking rather than another deny rule.
 
 Two of srt's switches are exposed because everyday work needs them and both are
 off by default: `allow-git-config` (write `.git/config`, so `git remote add` and
@@ -99,6 +108,9 @@ What pisbx does on top of whatever the file says:
 - **paths get interpreted**: tilde expansion, resolution to the symlink target,
   and target-relative resolution for the five path keys. Writing `~/x` therefore
   means the same as inside the sandbox, where Seatbelt sees the resolved path.
+  Resolution is computed for paths that do not exist yet too, by resolving the
+  deepest ancestor that does — a deny that only worked once the file had been
+  created would be no deny at all.
 - **the floor is merged in, add-only**: pi's state directory, its runtime, the
   workspace, temp space, and the always-denied set (`extensions/`, `install/`,
   the policy file itself). No file entry can open those.
@@ -119,6 +131,7 @@ mistaken for an srt option, and unknown keys are an error.
 ```toml
 [pisbx]
 trust = true                 # load project .pi extensions without asking
+unset = ["GITHUB_TOKEN"]     # strip what the sandbox should not inherit
 
 [pisbx.env]                  # environment for the sandboxed process
 SSH_AUTH_SOCK = "~/Library/Group Containers/<TEAM>.<app>/t/agent.sock"
@@ -126,8 +139,18 @@ SSH_AUTH_SOCK = "~/Library/Group Containers/<TEAM>.<app>/t/agent.sock"
 
 `[pisbx.env]` is what makes commit signing work without prefixing every command:
 srt cannot set environment for you, and the sandbox's own `SSH_AUTH_SOCK` is a
-launchd listener with no identities. `--explain` lists the variable names and
-never the values.
+launchd listener with no identities. `unset` is the other direction — pi
+inherits your shell, so a token exported there would otherwise be readable
+inside the sandbox.
+
+`--explain` lists names and never values, and a name that appears in both
+`env` and `unset` is a config error rather than a coin flip:
+
+```
+environment for the sandboxed process
+  SSH_AUTH_SOCK  set (config)
+  GITHUB_TOKEN   unset (config)
+```
 
 ## Per-project policy
 

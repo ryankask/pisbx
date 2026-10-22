@@ -79,6 +79,7 @@ pub struct Policy {
     /// Raw srt settings merged in add-only: arrays are unioned, objects merge,
     /// scalars never override what pisbx already decided.
     pub env: Vec<Entry>,
+    pub unset: Vec<Entry>,
     pub extras: serde_json::Value,
     pub read_only: bool,
     pub trust: bool,
@@ -271,22 +272,28 @@ impl Policy {
         section(&mut out, "mach lookups", &self.mach_lookup, "none");
         section(&mut out, "unix sockets", &self.unix_sockets, "none");
 
-        if !self.env.is_empty() {
+        if !self.env.is_empty() || !self.unset.is_empty() {
             // Names only: the values are the sandbox's business.
             out.push_str("\nenvironment for the sandboxed process\n");
-            let width = self
+            let rows: Vec<(&str, String)> = self
                 .env
                 .iter()
-                .map(|entry| entry.value.len())
-                .max()
-                .unwrap_or(0);
-            for entry in &self.env {
-                out.push_str(&format!(
-                    "  {:<width$}  {}\n",
-                    entry.value,
-                    entry.source.label(),
-                    width = width
-                ));
+                .map(|entry| {
+                    (
+                        entry.value.as_str(),
+                        format!("set ({})", entry.source.label()),
+                    )
+                })
+                .chain(self.unset.iter().map(|entry| {
+                    (
+                        entry.value.as_str(),
+                        format!("unset ({})", entry.source.label()),
+                    )
+                }))
+                .collect();
+            let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+            for (name, note) in rows {
+                out.push_str(&format!("  {name:<width$}  {note}\n", width = width));
             }
         }
 
@@ -552,6 +559,20 @@ mod tests {
             .find(|line| line.contains("allowLocalBinding"))
             .expect("allowLocalBinding line");
         assert!(!local.contains("ignored"), "{local}");
+    }
+
+    #[test]
+    fn explain_separates_set_from_unset() {
+        let policy = Policy {
+            env: entries(&["SSH_AUTH_SOCK"], Source::Config),
+            unset: entries(&["GITHUB_TOKEN"], Source::Config),
+            ..Policy::default()
+        };
+        let text = policy.explain(Path::new("/t"), None);
+        assert!(text.contains("SSH_AUTH_SOCK"), "{text}");
+        assert!(text.contains("set (config)"), "{text}");
+        assert!(text.contains("GITHUB_TOKEN"), "{text}");
+        assert!(text.contains("unset (config)"), "{text}");
     }
 
     #[test]

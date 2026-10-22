@@ -30,6 +30,47 @@ fn expand_tilde(entry: &str) -> Option<PathBuf> {
     }
 }
 
+/// The resolved form of a path that may not exist yet.
+///
+/// `canonicalize` fails on a missing leaf, which is exactly when a deny needs
+/// the resolved spelling: `~/.pi` is a symlink, so a rule written as `~/.pi/x`
+/// never matches what the kernel sees unless the target is spelled out too.
+/// Walk up to the deepest ancestor that exists, then reattach the remainder.
+fn resolved_spelling(path: &Path) -> Option<PathBuf> {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return Some(real);
+    }
+
+    let mut remainder: Vec<std::ffi::OsString> = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(current) {
+            let mut resolved = real;
+            for part in remainder.iter().rev() {
+                resolved.push(part);
+            }
+            return Some(resolved);
+        }
+        let name = current.file_name()?.to_os_string();
+        remainder.push(name);
+        current = current.parent()?;
+    }
+}
+
+/// Same, for a pattern: resolve its static prefix and reattach the rest.
+fn resolved_glob(entry: &str) -> Option<PathBuf> {
+    let static_prefix = entry.split(['*', '?', '[']).next().unwrap_or(entry);
+    let base = Path::new(static_prefix);
+    let directory = if static_prefix.ends_with('/') {
+        base
+    } else {
+        base.parent().unwrap_or(base)
+    };
+    let resolved = resolved_spelling(directory)?;
+    let tail = entry.strip_prefix(&format!("{}/", directory.display()))?;
+    Some(resolved.join(tail))
+}
+
 /// The spellings a single user-supplied entry should grant.
 pub fn expand(entry: &str, target: &Path) -> Vec<String> {
     let entry = entry.trim();
@@ -51,12 +92,15 @@ pub fn expand(entry: &str, target: &Path) -> Vec<String> {
     };
 
     let mut spellings = vec![literal.to_string_lossy().into_owned()];
-    if !glob {
-        if let Ok(resolved) = std::fs::canonicalize(&literal) {
-            let resolved = resolved.to_string_lossy().into_owned();
-            if !spellings.contains(&resolved) {
-                spellings.push(resolved);
-            }
+    let resolved = if glob {
+        resolved_glob(entry).or_else(|| resolved_spelling(&literal))
+    } else {
+        resolved_spelling(&literal)
+    };
+    if let Some(resolved) = resolved {
+        let resolved = resolved.to_string_lossy().into_owned();
+        if !spellings.contains(&resolved) {
+            spellings.push(resolved);
         }
     }
     spellings
@@ -85,7 +129,9 @@ mod tests {
     #[test]
     fn relative_paths_resolve_against_the_target() {
         let out = expand("shared", Path::new("/tmp/project"));
-        assert_eq!(out, ["/tmp/project/shared"]);
+        assert_eq!(out[0], "/tmp/project/shared");
+        // The resolved spelling follows, since /tmp is a symlink on macOS.
+        assert!(out.len() <= 2, "{out:?}");
     }
 
     #[test]
@@ -100,6 +146,35 @@ mod tests {
         let Some(home) = home() else { return };
         let out = expand("~/scratch", Path::new("/tmp/project"));
         assert_eq!(out, [home.join("scratch").to_string_lossy().into_owned()]);
+    }
+
+    #[test]
+    fn missing_paths_still_gain_a_resolved_spelling() {
+        let Some(home) = home() else { return };
+        // A path that does not exist under a symlinked directory: the resolved
+        // spelling has to be there anyway, or a deny on it never fires.
+        let entry = home.join(".pi/agent/does-not-exist.json");
+        let out = expand(&entry.to_string_lossy(), Path::new("/"));
+        assert!(
+            out.iter()
+                .any(|spelling| spelling.contains("/Projects/dotfiles/pi/agent/")
+                    || spelling == &entry.to_string_lossy()),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn glob_patterns_resolve_their_prefix() {
+        let Some(home) = home() else { return };
+        let out = expand(
+            &format!("{}/.pi/agent/*.md", home.display()),
+            Path::new("/"),
+        );
+        assert!(
+            out.iter()
+                .any(|spelling| spelling.ends_with("/pi/agent/*.md")),
+            "{out:?}"
+        );
     }
 
     #[test]

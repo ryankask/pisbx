@@ -37,11 +37,15 @@ pub fn run(
     settings: &Path,
     args: &[OsString],
     env: &[(String, String)],
+    unset: &[String],
 ) -> std::io::Result<ExitStatus> {
     let mut command = std::process::Command::new("srt");
     command.env(NODE_ENV_PROXY.0, NODE_ENV_PROXY.1);
     command.arg("-s").arg(settings).arg("--");
     command.args(args);
+    for name in unset {
+        command.env_remove(name);
+    }
     command.envs(env.iter().map(|(key, value)| (key, value)));
     command.status()
 }

@@ -247,6 +247,11 @@ pub fn render(draft: &Draft) -> String {
     out.push_str("# the directories on $PATH) are not repeated here, and neither are paths\n");
     out.push_str("# covered by a parent. `pisbx --explain` shows the whole picture.\n");
 
+    out.push_str("\n# Classes worth keeping closed — grant a single file if a tool needs it,\n");
+    out.push_str("# never the directory: ~/.ssh, ~/.gnupg, ~/.aws, ~/.azure, ~/.config/gcloud,\n");
+    out.push_str("# ~/.kube, ~/.docker, ~/.git-credentials, ~/.netrc, ~/.npmrc, Keychains,\n");
+    out.push_str("# browser profiles, Messages/Mail/Cookies, shell history and shell rc files.\n");
+
     out.push_str("\n[filesystem]\n");
     out.push_str("allowRead = [\n");
     for (index, (reason, entries)) in grouped(&draft.allow_read, true).iter().enumerate() {

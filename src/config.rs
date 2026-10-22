@@ -106,6 +106,9 @@ pub struct Pisbx {
     /// Environment variables for the sandboxed process. Names are shown by
     /// `--explain`; values never are.
     pub env: BTreeMap<String, String>,
+    /// Variables removed from the environment the sandboxed process inherits,
+    /// so a token in your shell does not travel into the sandbox.
+    pub unset: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
@@ -121,6 +124,43 @@ pub struct Config {
 }
 
 impl Config {
+    /// Rules serde cannot express: an env var cannot be both set and unset, and
+    /// a name has to look like one.
+    fn valid_name(name: &str) -> bool {
+        let mut chars = name.chars();
+        match chars.next() {
+            Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+            _ => return false,
+        }
+        chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
+    fn validate(&self, source: &Path) -> Result<(), String> {
+        for (index, name) in self.pisbx.unset.iter().enumerate() {
+            if !Self::valid_name(name) {
+                return Err(format!(
+                    "{}: pisbx.unset[{index}]: `{name}` is not an environment variable name",
+                    source.display()
+                ));
+            }
+            if self.pisbx.env.contains_key(name) {
+                return Err(format!(
+                    "{}: pisbx.unset[{index}]: `{name}` is also set in pisbx.env",
+                    source.display()
+                ));
+            }
+        }
+        for name in self.pisbx.env.keys() {
+            if !Self::valid_name(name) {
+                return Err(format!(
+                    "{}: pisbx.env: `{name}` is not an environment variable name",
+                    source.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Keys that will be forwarded but that nothing recognises.
     pub fn unknown_keys(&self) -> Vec<String> {
         let mut keys: Vec<String> = self
@@ -148,7 +188,10 @@ pub fn default_path() -> Option<PathBuf> {
 /// Parse the policy file. Unknown keys inside `filesystem` or `network` are an
 /// error; unknown top-level keys are passed through to srt.
 pub fn parse(text: &str, source: &Path) -> Result<Config, String> {
-    toml::from_str(text).map_err(|error| format!("{}: {error}", source.display()))
+    let config: Config =
+        toml::from_str(text).map_err(|error| format!("{}: {error}", source.display()))?;
+    config.validate(source)?;
+    Ok(config)
 }
 
 /// Load the config if it exists. A missing file is not an error; an unreadable
@@ -255,6 +298,33 @@ PI_CLIPBOARD_OSC52 = "1"
         assert!(
             config.rest.is_empty(),
             "pisbx settings must not be forwarded"
+        );
+        assert!(config.pisbx.unset.is_empty());
+    }
+
+    #[test]
+    fn unset_variables_are_read() {
+        let config = p("[pisbx]\nunset = [\"GITHUB_TOKEN\", \"AWS_SECRET_ACCESS_KEY\"]\n").unwrap();
+        assert_eq!(
+            config.pisbx.unset,
+            ["GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY"]
+        );
+    }
+
+    #[test]
+    fn a_variable_cannot_be_set_and_unset() {
+        let error = p("[pisbx]\nunset = [\"FOO\"]\n[pisbx.env]\nFOO = \"1\"\n").unwrap_err();
+        assert!(error.contains("also set"), "{error}");
+    }
+
+    #[test]
+    fn unset_names_must_look_like_names() {
+        let error = p("[pisbx]\nunset = [\"NOT A NAME\"]\n").unwrap_err();
+        assert!(error.contains("NOT A NAME"), "{error}");
+        let error = p("[pisbx]\nunset = [\"\"]\n").unwrap_err();
+        assert!(
+            error.contains("not an environment variable name"),
+            "{error}"
         );
     }
 

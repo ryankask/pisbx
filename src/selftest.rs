@@ -47,6 +47,16 @@ pub fn checks(read_only: bool, extra_write: Option<&str>) -> Vec<Check> {
             command: "echo x > ~/.pi/agent/install/.pisbx-probe 2>&1".to_string(),
         },
         Check {
+            label: "write to mcp servers blocked",
+            expected: "not permitted",
+            command: "echo x > ~/.pi/agent/mcp.json 2>&1".to_string(),
+        },
+        Check {
+            label: "write to system prompt blocked",
+            expected: "not permitted",
+            command: "echo x > ~/.pi/agent/SYSTEM.md 2>&1".to_string(),
+        },
+        Check {
             label: "write to pi state allowed",
             expected: "WRITE_OK",
             command: "mkdir -p ~/.pi/agent/sessions && echo x > ~/.pi/agent/sessions/.pisbx-probe && echo WRITE_OK && rm -f ~/.pi/agent/sessions/.pisbx-probe".to_string(),
@@ -137,6 +147,8 @@ mod tests {
                 "write in $HOME blocked",
                 "write to pi extensions blocked",
                 "write to pi install blocked",
+                "write to mcp servers blocked",
+                "write to system prompt blocked",
                 "write to pi state allowed",
                 "curl outside allowlist blocked",
             ]
@@ -153,19 +165,20 @@ mod tests {
     #[test]
     fn extra_directory_adds_a_check() {
         let checks = checks(false, Some("/tmp/keep"));
-        assert_eq!(checks.len(), 9);
-        assert!(
-            checks[8].command.contains("'/tmp/keep'"),
-            "{:?}",
-            checks[8].command
-        );
+        let last = checks.last().expect("probe check");
+        assert!(last.command.contains("'/tmp/keep'"), "{:?}", last.command);
+        assert_eq!(checks.len(), 11);
     }
 
     #[test]
     fn quotes_paths_for_the_shell() {
         let checks = checks(false, Some("/tmp/it's here"));
         assert!(
-            checks[8].command.contains(r"'/tmp/it'\''s here'"),
+            checks
+                .last()
+                .expect("probe check")
+                .command
+                .contains(r"'/tmp/it'\''s here'"),
             "{:?}",
             checks[8].command
         );

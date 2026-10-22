@@ -15,10 +15,22 @@ pub const WRITE_ROOTS: &[&str] = &["~/.pi/agent", "/private/tmp", "/private/var/
 /// startup and `install/` is the runtime it executes; either one writable means
 /// a sandboxed agent can arm the next session.
 pub const ALWAYS_DENY_WRITE: &[&str] = &[
+    // Code pi loads and runs in this or the next session.
     "~/.pi/agent/extensions",
     "~/.pi/agent/install",
+    "~/.pi/agent/mcp.json",
+    "~/.pi/agent/skills",
+    // Prompt material: a write here is durable prompt injection.
+    "~/.pi/agent/SYSTEM.md",
+    "~/.pi/agent/APPEND_SYSTEM.md",
+    "~/.pi/agent/AGENTS.md",
+    "~/.pi/agent/AGENTS.override.md",
+    "~/.pi/agent/CLAUDE.md",
+    "~/.pi/agent/prompts",
+    // Configuration that steers pi or its traffic.
     "~/.pi/agent/settings.json",
     "~/.pi/agent/keybindings.json",
+    "~/.pi/agent/models.json",
     "~/.pi/agent/models-store.json",
     "~/.pi/agent/npm",
     "~/.pi/agent/web-search-cache",
@@ -112,6 +124,9 @@ mod tests {
         for entry in [
             "~/.pi/agent/extensions",
             "~/.pi/agent/install",
+            "~/.pi/agent/mcp.json",
+            "~/.pi/agent/skills",
+            "~/.pi/agent/SYSTEM.md",
             "~/.pi/agent/settings.json",
         ] {
             assert!(ALWAYS_DENY_WRITE.contains(&entry), "{entry}");

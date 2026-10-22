@@ -176,6 +176,7 @@ struct Resolved {
     target: PathBuf,
     policy: Policy,
     env: Vec<(String, String)>,
+    unset: Vec<String>,
 }
 
 fn text_entries(entries: &[config::PathEntry]) -> Vec<String> {
@@ -203,6 +204,7 @@ fn resolve(
         paths::resolve_dir(&target_arg).with_context(|| format!("{}", target_arg.display()))?;
 
     let mut env_pairs: Vec<(String, String)> = Vec::new();
+    let mut unset_names: Vec<String> = Vec::new();
     let mut policy = Policy {
         read_only: cli.read_only,
         trust: (cli.trust
@@ -403,6 +405,13 @@ fn resolve(
         }
     }
 
+    if let Some(config) = loaded {
+        for name in &config.pisbx.unset {
+            policy.unset.push(Entry::new(name.clone(), Source::Config));
+            unset_names.push(name.clone());
+        }
+    }
+
     // Everything pisbx does not interpret is forwarded as-is.
     let mut extras = serde_json::json!({});
     if let Some(config) = loaded {
@@ -423,6 +432,7 @@ fn resolve(
         target,
         policy,
         env: env_pairs,
+        unset: unset_names,
     })
 }
 
@@ -558,7 +568,7 @@ fn run() -> Result<i32, Failure> {
         }
         argv.extend(tail);
 
-        let status = srt::run(file.path(), &argv, &resolved.env)
+        let status = srt::run(file.path(), &argv, &resolved.env, &resolved.unset)
             .map_err(|error| Failure::dependency(format!("could not run srt: {error}")))?;
         Ok(status.code().unwrap_or(1))
     }
@@ -646,7 +656,16 @@ mod tests {
 
         let settings = resolved.policy.settings();
         assert!(settings.filesystem.allow_git_config);
-        assert_eq!(settings.network.allow_unix_sockets, ["/tmp/agent.sock"]);
+        // /tmp resolves to /private/tmp, so both spellings are granted.
+        assert!(
+            settings
+                .network
+                .allow_unix_sockets
+                .iter()
+                .any(|entry| entry == "/tmp/agent.sock"),
+            "{:?}",
+            settings.network.allow_unix_sockets
+        );
     }
 
     #[test]
@@ -660,6 +679,7 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
+                unset: vec!["GITHUB_TOKEN".to_string()],
             },
             ..config::Config::default()
         };
@@ -676,6 +696,12 @@ mod tests {
             .iter()
             .any(|entry| entry.value == "SSH_AUTH_SOCK"));
         assert!(!resolved.policy.extras.to_string().contains("SSH_AUTH_SOCK"));
+        assert_eq!(resolved.unset, ["GITHUB_TOKEN"]);
+        assert!(resolved
+            .policy
+            .unset
+            .iter()
+            .any(|entry| entry.value == "GITHUB_TOKEN" && entry.source == Source::Config));
     }
 
     #[test]
