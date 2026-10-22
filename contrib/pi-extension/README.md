@@ -22,7 +22,10 @@ path, and `pi update` picks up changes:
 pi install git:github.com/ryankask/pisbx
 ```
 
-Do **not** use `pi install ./contrib/pi-extension`: a local source is written to
+A private fork needs credentials for the HTTPS clone: either `gh auth setup-git`
+(so git asks gh for its keyring token), or the SSH spelling
+`git:git@github.com:<you>/pisbx`. Do **not** use
+`pi install ./contrib/pi-extension`: a local source is written to
 `settings.json` as a path relative to that file, so it breaks when the checkout
 moves and differs on every machine.
 
