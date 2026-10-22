@@ -74,8 +74,14 @@ pub struct Policy {
     pub domains: Vec<Entry>,
     pub denied_domains: Vec<Entry>,
     pub mach_lookup: Vec<Entry>,
+    pub unix_sockets: Vec<Entry>,
+    pub allow_git_config: bool,
     pub read_only: bool,
     pub trust: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -85,6 +91,12 @@ pub struct Settings {
     pub allow_apple_events: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allow_mach_lookup: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allow_unix_sockets: Vec<String>,
+    // srt keeps .git/hooks protected either way; this only unblocks the config
+    // file, for tools that rewrite remotes or submodules.
+    #[serde(skip_serializing_if = "is_false")]
+    pub allow_git_config: bool,
     pub filesystem: Filesystem,
     pub network: Network,
 }
@@ -120,6 +132,8 @@ impl Policy {
             // unsandboxed code-execution path; keep it off.
             allow_apple_events: false,
             allow_mach_lookup: values(&self.mach_lookup),
+            allow_unix_sockets: values(&self.unix_sockets),
+            allow_git_config: self.allow_git_config,
             filesystem: Filesystem {
                 deny_read: values(&self.deny_read),
                 allow_read: values(&self.allow_read),
@@ -183,6 +197,7 @@ impl Policy {
         section(&mut out, "network", &self.domains, "none");
         section(&mut out, "network denied", &self.denied_domains, "none");
         section(&mut out, "mach lookups", &self.mach_lookup, "none");
+        section(&mut out, "unix sockets", &self.unix_sockets, "none");
 
         out.push_str("\nflags\n");
         out.push_str(&format!(
@@ -207,6 +222,14 @@ impl Policy {
                 "off"
             } else {
                 "on"
+            }
+        ));
+        out.push_str(&format!(
+            "  git config {}\n",
+            if self.allow_git_config {
+                "writable (.git/hooks still denied)"
+            } else {
+                "read-only"
             }
         ));
 
@@ -246,6 +269,25 @@ mod tests {
         assert_eq!(value["allowAppleEvents"], Value::Bool(false));
         assert_eq!(value["filesystem"]["allowWrite"], Value::Array(vec![]));
         assert_eq!(value["network"]["deniedDomains"], Value::Array(vec![]));
+    }
+
+    #[test]
+    fn optional_switches_are_omitted_when_off() {
+        let value = parse(&Policy::default());
+        assert!(value.get("allowUnixSockets").is_none());
+        assert!(value.get("allowGitConfig").is_none());
+    }
+
+    #[test]
+    fn optional_switches_appear_when_on() {
+        let policy = Policy {
+            allow_git_config: true,
+            unix_sockets: entries(&["/tmp/agent.sock"], Source::Config),
+            ..Policy::default()
+        };
+        let value = parse(&policy);
+        assert_eq!(value["allowGitConfig"], Value::Bool(true));
+        assert_eq!(value["allowUnixSockets"][0], "/tmp/agent.sock");
     }
 
     #[test]
@@ -304,6 +346,7 @@ mod tests {
         assert!(text.contains("built-in"), "{text}");
         assert!(text.contains("config"), "{text}");
         assert!(text.contains("mode       read-only"), "{text}");
+        assert!(text.contains("git config read-only"), "{text}");
         assert!(text.contains("run `pisbx --init`"), "{text}");
     }
 
@@ -312,5 +355,16 @@ mod tests {
         let text = Policy::default().explain(Path::new("/t"), None);
         assert!(text.contains("network\n  none"), "{text}");
         assert!(text.contains("mach lookups\n  none"), "{text}");
+        assert!(text.contains("unix sockets\n  none"), "{text}");
+    }
+
+    #[test]
+    fn explain_reports_git_config_when_open() {
+        let policy = Policy {
+            allow_git_config: true,
+            ..Policy::default()
+        };
+        let text = policy.explain(Path::new("/t"), None);
+        assert!(text.contains("git config writable"), "{text}");
     }
 }

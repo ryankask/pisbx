@@ -16,11 +16,13 @@ const VALUE_FLAGS: &[&str] = &[
     "--deny-read",
     "--deny-write",
     "--domains",
+    "--allow-unix-sockets",
 ];
 
 const BOOL_FLAGS: &[&str] = &[
     "--clipboard",
     "--no-clipboard",
+    "--allow-git-config",
     "--read-only",
     "--init",
     "--force",
@@ -72,6 +74,18 @@ pub struct Cli {
     /// Replace the policy file's domain list for this run
     #[arg(long, value_name = "LIST", value_delimiter = ',')]
     pub domains: Vec<String>,
+
+    /// Allow unix socket connections at these paths
+    #[arg(
+        long = "allow-unix-sockets",
+        value_name = "PATHS",
+        value_delimiter = ','
+    )]
+    pub allow_unix_sockets: Vec<String>,
+
+    /// Allow writes to .git/config (hooks stay blocked)
+    #[arg(long = "allow-git-config")]
+    pub allow_git_config: bool,
 
     /// Allow the pasteboard
     #[arg(long)]
@@ -244,6 +258,13 @@ mod tests {
     fn missing_value_is_a_usage_error() {
         let error = parse(["--allow-write"].map(OsString::from)).unwrap_err();
         assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn socket_and_git_flags() {
+        let (cli, _) = p(&["--allow-unix-sockets", "/tmp/a.sock,/tmp/b.sock"]);
+        assert_eq!(cli.allow_unix_sockets, ["/tmp/a.sock", "/tmp/b.sock"]);
+        assert!(p(&["--allow-git-config"]).0.allow_git_config);
     }
 
     #[test]

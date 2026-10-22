@@ -305,6 +305,38 @@ fn resolve(
         );
     }
 
+    // Switches srt exposes that are off unless asked for. --read-only wins:
+    // writing .git/config is still writing.
+    policy.allow_git_config = !cli.read_only
+        && (cli.allow_git_config
+            || env_flag("PISBX_ALLOW_GIT_CONFIG", false)
+            || loaded
+                .map(|config| config.allow_git_config)
+                .unwrap_or(false));
+
+    merge(
+        &mut policy.unix_sockets,
+        expand(env_list("PISBX_ALLOW_UNIX_SOCKETS"), &target, Source::Env),
+    );
+    merge(
+        &mut policy.unix_sockets,
+        expand(
+            cli.allow_unix_sockets.iter().cloned(),
+            &target,
+            Source::Flag,
+        ),
+    );
+    if let Some(config) = loaded {
+        merge(
+            &mut policy.unix_sockets,
+            expand(
+                config.allow_unix_sockets.iter().cloned(),
+                &target,
+                Source::Config,
+            ),
+        );
+    }
+
     let clipboard = cli
         .clipboard()
         .unwrap_or_else(|| env_flag("PISBX_CLIPBOARD", false));
@@ -511,6 +543,42 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_switches_reach_the_settings() {
+        let loaded = config::Config {
+            allow_git_config: true,
+            allow_unix_sockets: vec!["/tmp/agent.sock".to_string()],
+            ..config::Config::default()
+        };
+        let cli = Cli::default();
+        let resolved = resolve(&cli, Some(&loaded), None).unwrap();
+
+        assert!(resolved.policy.allow_git_config);
+        assert!(resolved
+            .policy
+            .unix_sockets
+            .iter()
+            .any(|entry| entry.value == "/tmp/agent.sock" && entry.source == Source::Config));
+
+        let settings = resolved.policy.settings();
+        assert!(settings.allow_git_config);
+        assert_eq!(settings.allow_unix_sockets, ["/tmp/agent.sock"]);
+    }
+
+    #[test]
+    fn read_only_also_closes_git_config() {
+        let loaded = config::Config {
+            allow_git_config: true,
+            ..config::Config::default()
+        };
+        let cli = Cli {
+            read_only: true,
+            ..Cli::default()
+        };
+        let resolved = resolve(&cli, Some(&loaded), None).unwrap();
+        assert!(!resolved.policy.allow_git_config);
     }
 
     #[test]

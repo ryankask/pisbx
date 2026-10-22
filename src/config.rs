@@ -26,6 +26,10 @@ pub struct Config {
     pub denied_domains: Vec<String>,
     #[serde(default)]
     pub mach_lookup: Vec<String>,
+    #[serde(default)]
+    pub allow_unix_sockets: Vec<String>,
+    #[serde(default)]
+    pub allow_git_config: bool,
 }
 
 pub fn default_path() -> Option<PathBuf> {
@@ -59,6 +63,7 @@ mod tests {
     #[test]
     fn empty_input_is_an_empty_config() {
         assert_eq!(p("").unwrap(), Config::default());
+        assert!(!p("").unwrap().allow_git_config);
         assert_eq!(p("# only a comment\n").unwrap(), Config::default());
     }
 

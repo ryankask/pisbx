@@ -263,6 +263,15 @@ pub fn render(draft: &Draft) -> String {
     out.push_str("# and temp space are always writable; `--read-only` drops even those.\n");
     out.push_str("# allow-write = [\"~/scratch\"]\n");
 
+    out.push_str("\n# Let tools rewrite .git/config (remotes, submodules). .git/hooks stay\n");
+    out.push_str("# blocked either way.\n");
+    out.push_str("# allow-git-config = true\n");
+
+    out.push_str("\n# Unix sockets a tool may talk to, e.g. an SSH agent used for signing.\n");
+    out.push_str(
+        "# allow-unix-sockets = [\"~/Library/Group Containers/<TEAM>.<app>/t/agent.sock\"]\n",
+    );
+
     out.push_str("\n# Model provider hosts. Nothing else is reachable: a fetch to any other\n");
     out.push_str("# host fails. Wildcards are written `*.example.com`.\n");
     if draft.domains.is_empty() {

@@ -47,6 +47,11 @@ Denying writes to `extensions/` and `install/` is the highest-value line in the
 file: either one writable means a sandboxed agent can arm the next session with
 code it chose. The floor exists to let a session run, not to let it persist.
 
+Two of srt's switches are exposed because everyday work needs them and both are
+off by default: `allow-git-config` (write `.git/config`, so `git remote add` and
+submodules work — `.git/hooks` stay blocked either way) and `allow-unix-sockets`
+(talk to a specific socket, such as an SSH agent used for commit signing).
+
 ## First run
 
 `--init` reads the machine — `$DOTFILES`, caches, the directories on `$PATH`,
@@ -85,6 +90,12 @@ deny-write = ["~/scratch/.git"]
 
 # Pasteboard access, off unless uncommented.
 mach-lookup = ["com.apple.pasteboard.1", "com.apple.lsd.mapdb", "com.apple.lsd.modifydb"]
+
+# Let tools rewrite .git/config (remotes, submodules). Hooks stay blocked.
+allow-git-config = true
+
+# Unix sockets a tool may talk to, e.g. an SSH agent used for signing.
+allow-unix-sockets = ["~/Library/Group Containers/<TEAM>.<app>/t/agent.sock"]
 ```
 
 `domains` is replaced, never extended: flags beat the file, and the file beats
@@ -113,6 +124,8 @@ Put that line in the repo's `justfile`, a shell function, or an alias.
 | `pisbx --selftest` | run real commands through srt and assert what actually happens |
 | `pisbx --read-only` | keep every write except pi's state directory |
 | `pisbx --clipboard` | allow the pasteboard for this run |
+| `pisbx --allow-git-config` | let this run write `.git/config` (hooks stay denied) |
+| `pisbx --allow-unix-sockets <paths>` | let this run connect to those sockets |
 
 Options are consumed only up to the first non-option argument or `--`;
 everything after belongs to pi. Inspection modes work without a config file, so
