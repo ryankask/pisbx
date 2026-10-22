@@ -1,0 +1,14 @@
+{
+  "name": "pisbx",
+  "version": "0.1.0",
+  "description": "pi extension and skill that make the pisbx sandbox visible to the agent",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./contrib/pi-extension/index.ts"],
+    "skills": ["./contrib/pi-extension/SKILL.md"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
