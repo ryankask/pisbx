@@ -247,7 +247,8 @@ pub fn render(draft: &Draft) -> String {
     out.push_str("# the directories on $PATH) are not repeated here, and neither are paths\n");
     out.push_str("# covered by a parent. `pisbx --explain` shows the whole picture.\n");
 
-    out.push_str("\nallow-read = [\n");
+    out.push_str("\n[filesystem]\n");
+    out.push_str("allowRead = [\n");
     for (index, (reason, entries)) in grouped(&draft.allow_read, true).iter().enumerate() {
         if index > 0 {
             out.push('\n');
@@ -261,23 +262,21 @@ pub fn render(draft: &Draft) -> String {
 
     out.push_str("\n# Writable paths beyond the workspace. The workspace, pi's state directory\n");
     out.push_str("# and temp space are always writable; `--read-only` drops even those.\n");
-    out.push_str("# allow-write = [\"~/scratch\"]\n");
+    out.push_str("# allowWrite = [\"~/scratch\"]\n");
 
     out.push_str("\n# Let tools rewrite .git/config (remotes, submodules). .git/hooks stay\n");
     out.push_str("# blocked either way.\n");
-    out.push_str("# allow-git-config = true\n");
+    out.push_str("# allowGitConfig = true\n");
 
-    out.push_str("\n# Unix sockets a tool may talk to, e.g. an SSH agent used for signing.\n");
-    out.push_str(
-        "# allow-unix-sockets = [\"~/Library/Group Containers/<TEAM>.<app>/t/agent.sock\"]\n",
-    );
-
-    out.push_str("\n# Model provider hosts. Nothing else is reachable: a fetch to any other\n");
+    out.push_str("\n[network]\n");
+    out.push_str("# Model provider hosts. Nothing else is reachable: a fetch to any other\n");
     out.push_str("# host fails. Wildcards are written `*.example.com`.\n");
     if draft.domains.is_empty() {
-        out.push_str("# domains = []   # no provider detected: add the host your model uses\n");
+        out.push_str(
+            "# allowedDomains = []   # no provider detected: add the host your model uses\n",
+        );
     } else {
-        out.push_str("domains = [\n");
+        out.push_str("allowedDomains = [\n");
         for (index, (reason, entries)) in grouped(&draft.domains, false).iter().enumerate() {
             if index > 0 {
                 out.push('\n');
@@ -290,17 +289,23 @@ pub fn render(draft: &Draft) -> String {
         out.push_str("]\n");
     }
 
+    out.push_str("\n# A dev server, `vite`, or a local MCP server needs this.\n");
+    out.push_str("# allowLocalBinding = true\n");
+
+    out.push_str("\n# Allowed hostnames are checked against this after DNS, so an allow-listed\n");
+    out.push_str("# wildcard cannot be aimed at your LAN.\n");
+    out.push_str("# deniedResolvedAddresses = [\"10.0.0.0/8\", \"192.168.0.0/16\"]\n");
+
+    out.push_str("\n# Unix sockets a tool may talk to, e.g. an SSH agent used for signing.\n");
+    out.push_str(
+        "# allowUnixSockets = [\"~/Library/Group Containers/<TEAM>.<app>/t/agent.sock\"]\n",
+    );
+
     out.push_str(
         "\n# Clipboard: the pasteboard is a Mach service, denied by default. Reading it\n",
     );
     out.push_str("# means the agent sees whatever you copied, so this ships commented out.\n");
-    out.push_str("# mach-lookup = [\"com.apple.pasteboard.1\", \"com.apple.lsd.mapdb\", \"com.apple.lsd.modifydb\"]\n");
-
-    out.push_str("\n# Raw srt settings, merged add-only: lists are unioned and a scalar here\n");
-    out.push_str("# never overrides a decision pisbx made (pty on, apple events off).\n");
-    out.push_str("# [srt.network]\n");
-    out.push_str("# allowLocalBinding = true            # dev servers on localhost\n");
-    out.push_str("# deniedResolvedAddresses = [\"10.0.0.0/8\", \"192.168.0.0/16\"]\n");
+    out.push_str("# allowMachLookup = [\"com.apple.pasteboard.1\", \"com.apple.lsd.mapdb\", \"com.apple.lsd.modifydb\"]\n");
 
     out
 }
@@ -364,12 +369,18 @@ mod tests {
 
         let mut expected = vec!["~/Projects/dotfiles", "~/nonexistent"];
         expected.sort_unstable();
-        let mut actual = config.allow_read;
+        let mut actual: Vec<String> = config
+            .filesystem
+            .allow_read
+            .iter()
+            .map(|entry| entry.text().to_string())
+            .collect();
         actual.sort();
         assert_eq!(actual, expected);
-        assert_eq!(config.domains, ["api.openai.com"]);
+        assert_eq!(config.network.allowed_domains, ["api.openai.com"]);
         // Clipboard ships commented out.
-        assert!(config.mach_lookup.is_empty());
+        assert!(config.network.allow_mach_lookup.is_empty());
+        assert!(!config.filesystem.allow_git_config);
     }
 
     #[test]
@@ -426,9 +437,20 @@ mod tests {
     }
 
     #[test]
+    fn every_hint_is_commented_out() {
+        let draft = draft_with(&["~/x"], &["api.example"]);
+        let config = parsed(&render(&draft));
+        assert!(config.filesystem.allow_write.is_empty());
+        assert!(!config.filesystem.allow_git_config);
+        assert!(config.network.allow_unix_sockets.is_empty());
+        assert!(config.network.allow_mach_lookup.is_empty());
+        assert!(config.network.rest.is_empty(), "{:?}", config.network.rest);
+    }
+
+    #[test]
     fn no_domains_renders_a_hint() {
         let text = render(&draft_with(&["~/x"], &[]));
-        assert!(text.contains("# domains = []"), "{text}");
+        assert!(text.contains("# allowedDomains = []"), "{text}");
     }
 
     #[test]
@@ -463,7 +485,7 @@ mod tests {
         assert!(matches!(write(&path, true).unwrap(), Outcome::Written(_)));
         assert!(std::fs::read_to_string(&path)
             .unwrap()
-            .contains("allow-read"));
+            .contains("allowRead"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

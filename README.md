@@ -70,56 +70,45 @@ reading the pasteboard lets the agent see whatever you copied.
 
 ## Policy file
 
-One file, `~/.config/pisbx/config.toml`, read from `$HOME` and never from the
-workspace. A cloned repository must not be able to widen its own sandbox, and
-that includes the agent editing the config it will be judged by — the file is
-`deny-write` inside the sandbox.
+One file, `~/.config/pisbx/config.toml`, written in **srt's own schema** — so
+there is no translation layer, and every option srt grows works here without a
+pisbx release. It is read from `$HOME`, never from the workspace: a cloned
+repository must not be able to widen its own sandbox, and the file is
+`deny-write` inside the sandbox so the agent cannot widen it either.
 
 ```toml
-allow-read = ["~/Projects/dotfiles", "~/.cache"]
+[filesystem]
+allowRead = ["~/Projects/dotfiles", "~/.cache", "~/.ssh/known_hosts"]
+allowWrite = ["~/scratch"]
+denyWrite = ["~/scratch/.git"]
+allowGitConfig = true            # .git/config, not .git/hooks
 
-# Writable paths beyond the workspace.
-allow-write = ["~/scratch"]
-
-# Model provider hosts. Nothing else is reachable.
-domains = ["api.openai.com", "chatgpt.com", "auth.openai.com"]
-
-# Additional unreadable paths, and paths to keep read-only.
-deny-read = ["~/vault"]
-deny-write = ["~/scratch/.git"]
-
-# Pasteboard access, off unless uncommented.
-mach-lookup = ["com.apple.pasteboard.1", "com.apple.lsd.mapdb", "com.apple.lsd.modifydb"]
-
-# Let tools rewrite .git/config (remotes, submodules). Hooks stay blocked.
-allow-git-config = true
-
-# Unix sockets a tool may talk to, e.g. an SSH agent used for signing.
-allow-unix-sockets = ["~/Library/Group Containers/<TEAM>.<app>/t/agent.sock"]
-```
-
-`domains` is replaced, never extended: flags beat the file, and the file beats
-the environment. An inherited `PISBX_DOMAINS` from an outer session cannot
-quietly widen your policy.
-
-### Anything else srt can do
-
-srt has more knobs than pisbx has flags. A `[srt]` table is merged into the
-generated settings **add-only**: lists are unioned, objects merged, and a scalar
-there never overrides something pisbx already decided.
-
-```toml
-[srt.network]
-allowLocalBinding = true                 # dev servers on localhost
+[network]
+allowedDomains = ["api.openai.com", "github.com", "*.github.com"]
+allowUnixSockets = ["~/Library/Group Containers/<TEAM>.<app>/t/agent.sock"]
+allowMachLookup = ["com.apple.pasteboard.1", "com.apple.lsd.mapdb", "com.apple.lsd.modifydb"]
+allowLocalBinding = true          # dev servers on localhost
 deniedResolvedAddresses = ["10.0.0.0/8", "192.168.0.0/16"]
 
-[srt.network.deniedDomainReasons]
+[network.deniedDomainReasons]
 "github.com:22" = "SSH to GitHub goes through git; a bare ssh is not proxied."
 ```
 
-Add-only is the safety property: `allowPty = false` or an emptied `denyWrite`
-cannot weaken the profile. `pisbx --explain` lists each passthrough entry and
-marks the ones that did not apply (`ignored: pisbx already decided`).
+What pisbx does on top of whatever the file says:
+
+- **paths get interpreted**: tilde expansion, resolution to the symlink target,
+  and target-relative resolution for the five path keys. Writing `~/x` therefore
+  means the same as inside the sandbox, where Seatbelt sees the resolved path.
+- **the floor is merged in, add-only**: pi's state directory, its runtime, the
+  workspace, temp space, and the always-denied set (`extensions/`, `install/`,
+  the policy file itself). No file entry can open those.
+- **`--read-only`** drops `allowWrite` and `allowGitConfig` for the run.
+- **precedence**: `allowedDomains` is replaced, never extended — flags beat the
+  file, and the file beats `PISBX_DOMAINS` in the environment, so an inherited
+  variable cannot quietly override policy you wrote.
+- **unknown keys** inside `filesystem` are an error; anywhere else they are
+  forwarded to srt and named in a warning, since srt would otherwise drop them
+  silently.
 
 ## Per-project policy
 

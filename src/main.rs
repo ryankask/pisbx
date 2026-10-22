@@ -20,7 +20,7 @@ mod srt;
 
 use anyhow::{Context, Result};
 use cli::Cli;
-use policy::{merge, Entry, Policy, Source};
+use policy::{merge, merge_extra, Entry, Policy, Source};
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -134,46 +134,6 @@ fn load_config(path: Option<&Path>) -> Result<Option<config::Config>> {
     config::load(path).map_err(anyhow::Error::msg)
 }
 
-/// Keys inside the `[srt]` passthrough that name paths, so they get the same
-/// tilde and symlink treatment as the typed keys. Without this, `~/x` in one
-/// table and `~/x` in the other would resolve differently.
-const EXTRA_PATH_KEYS: &[(&str, &str)] = &[
-    ("filesystem", "allowRead"),
-    ("filesystem", "allowWrite"),
-    ("filesystem", "denyRead"),
-    ("filesystem", "denyWrite"),
-    ("network", "allowUnixSockets"),
-];
-
-fn expand_extra_paths(value: &mut serde_json::Value, target: &Path) {
-    for (section, key) in EXTRA_PATH_KEYS {
-        let Some(entries) = value
-            .get_mut(*section)
-            .and_then(|section| section.get_mut(*key))
-            .and_then(|value| value.as_array_mut())
-        else {
-            continue;
-        };
-
-        let mut expanded: Vec<serde_json::Value> = Vec::new();
-        for entry in entries.iter() {
-            let spellings: Vec<serde_json::Value> = match entry.as_str() {
-                Some(text) => paths::expand(text, target)
-                    .into_iter()
-                    .map(serde_json::Value::String)
-                    .collect(),
-                None => vec![entry.clone()],
-            };
-            for spelling in spellings {
-                if !expanded.contains(&spelling) {
-                    expanded.push(spelling);
-                }
-            }
-        }
-        *entries = expanded;
-    }
-}
-
 /// Expand every entry into the path spellings to grant, keeping the source.
 fn expand(entries: impl IntoIterator<Item = String>, target: &Path, source: Source) -> Vec<Entry> {
     let mut out = Vec::new();
@@ -217,6 +177,13 @@ struct Resolved {
     policy: Policy,
 }
 
+fn text_entries(entries: &[config::PathEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .map(|entry| entry.text().to_string())
+        .collect()
+}
+
 fn resolve(
     cli: &Cli,
     loaded: Option<&config::Config>,
@@ -240,8 +207,8 @@ fn resolve(
         ..Policy::default()
     };
 
-    // Writes: the workspace and the floor, then anything granted on top. Each
-    // layer keeps its own label so --explain can say where a grant came from.
+    // Writes: the workspace and the floor, then whatever the file, the
+    // environment and the flags add.
     let mut writes = floor_writes(if cli.read_only { None } else { Some(&target) });
     if !cli.read_only {
         writes.extend(expand(env_list("PISBX_ALLOW_WRITE"), &target, Source::Env));
@@ -252,7 +219,7 @@ fn resolve(
         ));
         if let Some(config) = loaded {
             writes.extend(expand(
-                config.allow_write.iter().cloned(),
+                text_entries(&config.filesystem.allow_write),
                 &target,
                 Source::Config,
             ));
@@ -261,8 +228,6 @@ fn resolve(
     merge(&mut policy.allow_write, writes);
 
     // Denied writes win over everything, including the floor.
-    // Deny entries are expanded too: ~/.pi is usually a symlink, and Seatbelt
-    // matches the resolved path, so a literal deny would never fire.
     let mut denied = expand(
         floor::ALWAYS_DENY_WRITE.iter().map(|s| s.to_string()),
         &target,
@@ -279,7 +244,6 @@ fn resolve(
             denied.push(Entry::new(path.to_string_lossy(), Source::Builtin));
         }
     }
-    // Denials apply in every mode: denying more can never cause a write.
     denied.extend(expand(
         cli.deny_write.iter().cloned(),
         &target,
@@ -287,14 +251,14 @@ fn resolve(
     ));
     if let Some(config) = loaded {
         denied.extend(expand(
-            config.deny_write.iter().cloned(),
+            text_entries(&config.filesystem.deny_write),
             &target,
             Source::Config,
         ));
     }
     merge(&mut policy.deny_write, denied);
 
-    // Reads: home is closed, the floor re-opens what pi needs.
+    // Reads: home is closed, then the floor re-opens what pi needs.
     merge(
         &mut policy.deny_read,
         expand(["~".to_string()], &target, Source::Builtin),
@@ -308,16 +272,13 @@ fn resolve(
     ));
     if let Some(config) = loaded {
         reads.extend(expand(
-            config.allow_read.iter().cloned(),
+            text_entries(&config.filesystem.allow_read),
             &target,
             Source::Config,
         ));
-        merge(
-            &mut policy.deny_read,
-            expand(config.deny_read.iter().cloned(), &target, Source::Config),
-        );
     }
     merge(&mut policy.allow_read, reads);
+
     merge(
         &mut policy.deny_read,
         expand(env_list("PISBX_DENY_READ"), &target, Source::Env),
@@ -326,14 +287,28 @@ fn resolve(
         &mut policy.deny_read,
         expand(cli.deny_read.iter().cloned(), &target, Source::Flag),
     );
+    if let Some(config) = loaded {
+        merge(
+            &mut policy.deny_read,
+            expand(
+                text_entries(&config.filesystem.deny_read),
+                &target,
+                Source::Config,
+            ),
+        );
+    }
 
-    // Network: nothing by default. The list is replaced, never extended, and
-    // the file beats the environment: an inherited PISBX_DOMAINS from an outer
-    // session must not quietly override the policy you wrote.
+    // Network: the list is replaced, never extended. Flags win, then the file,
+    // then the environment, so an inherited PISBX_DOMAINS cannot override a
+    // policy you wrote.
     let domains = if !cli.domains.is_empty() {
         literal(cli.domains.iter().cloned(), Source::Flag)
-    } else if let Some(config) = loaded.filter(|config| !config.domains.is_empty()) {
-        literal(config.domains.iter().cloned(), Source::Config)
+    } else if let Some(config) = loaded.filter(|config| !config.network.allowed_domains.is_empty())
+    {
+        literal(
+            config.network.allowed_domains.iter().cloned(),
+            Source::Config,
+        )
     } else {
         literal(env_list("PISBX_DOMAINS"), Source::Env)
     };
@@ -341,18 +316,12 @@ fn resolve(
     if let Some(config) = loaded {
         merge(
             &mut policy.denied_domains,
-            literal(config.denied_domains.iter().cloned(), Source::Config),
+            literal(
+                config.network.denied_domains.iter().cloned(),
+                Source::Config,
+            ),
         );
     }
-
-    // Switches srt exposes that are off unless asked for. --read-only wins:
-    // writing .git/config is still writing.
-    policy.allow_git_config = !cli.read_only
-        && (cli.allow_git_config
-            || env_flag("PISBX_ALLOW_GIT_CONFIG", false)
-            || loaded
-                .map(|config| config.allow_git_config)
-                .unwrap_or(false));
 
     merge(
         &mut policy.unix_sockets,
@@ -370,25 +339,31 @@ fn resolve(
         merge(
             &mut policy.unix_sockets,
             expand(
-                config.allow_unix_sockets.iter().cloned(),
+                text_entries(&config.network.allow_unix_sockets),
                 &target,
                 Source::Config,
             ),
         );
     }
 
-    // Raw srt settings from the `[srt]` table, merged add-only at render time.
-    policy.extras = match loaded.and_then(|config| config.srt.as_ref()) {
-        Some(srt) => serde_json::to_value(srt).unwrap_or(serde_json::Value::Null),
-        None => serde_json::Value::Null,
-    };
-    expand_extra_paths(&mut policy.extras, &target);
-
-    let clipboard = cli
-        .clipboard()
-        .unwrap_or_else(|| env_flag("PISBX_CLIPBOARD", false));
-    if clipboard {
+    // Pasteboard: whatever the file lists, plus the built-in trio when asked
+    // for, minus it when explicitly refused.
+    if let Some(config) = loaded {
         merge(
+            &mut policy.mach_lookup,
+            literal(
+                config.network.allow_mach_lookup.iter().cloned(),
+                Source::Config,
+            ),
+        );
+    }
+    let clipboard = cli.clipboard().or_else(|| {
+        std::env::var("PISBX_CLIPBOARD")
+            .ok()
+            .map(|value| !matches!(value.trim(), "" | "0" | "false" | "no"))
+    });
+    match clipboard {
+        Some(true) => merge(
             &mut policy.mach_lookup,
             literal(
                 policy::CLIPBOARD_MACH_SERVICES
@@ -396,14 +371,36 @@ fn resolve(
                     .map(|s| s.to_string()),
                 Source::Builtin,
             ),
-        );
+        ),
+        Some(false) => policy
+            .mach_lookup
+            .retain(|entry| !policy::CLIPBOARD_MACH_SERVICES.contains(&entry.value.as_str())),
+        None => {}
     }
+
+    // --read-only wins: writing .git/config is still writing.
+    policy.allow_git_config = !cli.read_only
+        && (cli.allow_git_config
+            || env_flag("PISBX_ALLOW_GIT_CONFIG", false)
+            || loaded
+                .map(|config| config.filesystem.allow_git_config)
+                .unwrap_or(false));
+
+    // Everything pisbx does not interpret is forwarded as-is.
+    let mut extras = serde_json::json!({});
     if let Some(config) = loaded {
-        merge(
-            &mut policy.mach_lookup,
-            literal(config.mach_lookup.iter().cloned(), Source::Config),
-        );
+        if !config.rest.is_empty() {
+            let table = serde_json::to_value(&config.rest).unwrap_or_default();
+            merge_extra(&mut extras, &table);
+        }
+        if !config.network.rest.is_empty() {
+            let network = serde_json::json!({
+                "network": serde_json::to_value(&config.network.rest).unwrap_or_default()
+            });
+            merge_extra(&mut extras, &network);
+        }
     }
+    policy.extras = extras;
 
     Ok(Resolved { target, policy })
 }
@@ -468,6 +465,11 @@ fn run() -> Result<i32, Failure> {
         }
     } else {
         let loaded = load_config(Some(&config_path)).map_err(Failure::config)?;
+        if let Some(config) = loaded.as_ref() {
+            for key in config.unknown_keys() {
+                eprintln!("pisbx: warning: {key} is not a known setting; forwarded to srt anyway");
+            }
+        }
         let resolved = resolve(&cli, loaded.as_ref(), Some(&config_path))
             .map_err(|error| Failure::usage(format!("{error:#}")))?;
         let settings = resolved.policy.to_json();
@@ -560,8 +562,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pisbx-resolve-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let loaded = config::Config {
-            allow_read: vec!["/tmp/config-read".to_string()],
-            domains: vec!["api.example".to_string()],
+            filesystem: config::Filesystem {
+                allow_read: vec![config::PathEntry::Plain("/tmp/config-read".into())],
+                ..config::Filesystem::default()
+            },
+            network: config::Network {
+                allowed_domains: vec!["api.example".to_string()],
+                ..config::Network::default()
+            },
             ..config::Config::default()
         };
         let cli = Cli {
@@ -595,8 +603,14 @@ mod tests {
     #[test]
     fn config_switches_reach_the_settings() {
         let loaded = config::Config {
-            allow_git_config: true,
-            allow_unix_sockets: vec!["/tmp/agent.sock".to_string()],
+            filesystem: config::Filesystem {
+                allow_git_config: true,
+                ..config::Filesystem::default()
+            },
+            network: config::Network {
+                allow_unix_sockets: vec![config::PathEntry::Plain("/tmp/agent.sock".into())],
+                ..config::Network::default()
+            },
             ..config::Config::default()
         };
         let cli = Cli::default();
@@ -615,35 +629,37 @@ mod tests {
     }
 
     #[test]
-    fn passthrough_paths_get_the_same_treatment_as_typed_ones() {
-        let mut extras = serde_json::json!({
-            "filesystem": {"allowWrite": ["~/Projects", "relative"], "denyRead": []},
-            "network": {"allowUnixSockets": ["~/x.sock"]}
-        });
-        expand_extra_paths(&mut extras, Path::new("/srv"));
+    fn unmodelled_settings_are_forwarded_add_only() {
+        let loaded = config::Config {
+            network: config::Network {
+                rest: toml::from_str(
+                    "allowLocalBinding = true\n[deniedDomainReasons]\n\"github.com:22\" = \"use https\"\n",
+                )
+                .unwrap_or_default(),
+                ..config::Network::default()
+            },
+            ..config::Config::default()
+        };
+        let resolved = resolve(&Cli::default(), Some(&loaded), None).unwrap();
+        let settings = resolved.policy.settings();
 
-        let writes = extras["filesystem"]["allowWrite"].as_array().unwrap();
-        assert!(
-            writes.iter().any(|entry| entry == "/srv/relative"),
-            "{writes:?}"
+        // Pisbx's own decisions are untouched...
+        assert!(settings.allow_pty);
+        // ...and the forwarded ones are merged in.
+        assert_eq!(resolved.policy.extras["network"]["allowLocalBinding"], true);
+        assert_eq!(
+            resolved.policy.extras["network"]["deniedDomainReasons"]["github.com:22"],
+            "use https"
         );
-        let home_entry = writes
-            .iter()
-            .filter_map(|entry| entry.as_str())
-            .find(|entry| entry.contains("/Projects"))
-            .expect("home path expanded");
-        assert!(home_entry.starts_with('/'), "{home_entry}");
-
-        let sockets = extras["network"]["allowUnixSockets"].as_array().unwrap();
-        assert!(sockets
-            .iter()
-            .any(|entry| entry.as_str().unwrap().starts_with('/')));
     }
 
     #[test]
     fn read_only_also_closes_git_config() {
         let loaded = config::Config {
-            allow_git_config: true,
+            filesystem: config::Filesystem {
+                allow_git_config: true,
+                ..config::Filesystem::default()
+            },
             ..config::Config::default()
         };
         let cli = Cli {
@@ -657,7 +673,10 @@ mod tests {
     #[test]
     fn read_only_drops_every_extra_write() {
         let loaded = config::Config {
-            allow_write: vec!["/tmp/from-config".to_string()],
+            filesystem: config::Filesystem {
+                allow_write: vec![config::PathEntry::Plain("/tmp/from-config".into())],
+                ..config::Filesystem::default()
+            },
             ..config::Config::default()
         };
         let cli = Cli {
