@@ -563,8 +563,8 @@ mod tests {
             .any(|entry| entry.value == "/tmp/agent.sock" && entry.source == Source::Config));
 
         let settings = resolved.policy.settings();
-        assert!(settings.allow_git_config);
-        assert_eq!(settings.allow_unix_sockets, ["/tmp/agent.sock"]);
+        assert!(settings.filesystem.allow_git_config);
+        assert_eq!(settings.network.allow_unix_sockets, ["/tmp/agent.sock"]);
     }
 
     #[test]

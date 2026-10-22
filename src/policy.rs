@@ -89,14 +89,6 @@ fn is_false(value: &bool) -> bool {
 pub struct Settings {
     pub allow_pty: bool,
     pub allow_apple_events: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub allow_mach_lookup: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub allow_unix_sockets: Vec<String>,
-    // srt keeps .git/hooks protected either way; this only unblocks the config
-    // file, for tools that rewrite remotes or submodules.
-    #[serde(skip_serializing_if = "is_false")]
-    pub allow_git_config: bool,
     pub filesystem: Filesystem,
     pub network: Network,
 }
@@ -109,6 +101,11 @@ pub struct Filesystem {
     pub allow_read: Vec<String>,
     pub allow_write: Vec<String>,
     pub deny_write: Vec<String>,
+    // srt keeps .git/hooks protected either way; this only unblocks the config
+    // file, for tools that rewrite remotes or submodules. Read from
+    // `filesystem`, not the top level.
+    #[serde(skip_serializing_if = "is_false")]
+    pub allow_git_config: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -116,6 +113,12 @@ pub struct Filesystem {
 pub struct Network {
     pub allowed_domains: Vec<String>,
     pub denied_domains: Vec<String>,
+    // These two live under `network` in srt's config schema; at the top level
+    // they are accepted and silently ignored.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allow_mach_lookup: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allow_unix_sockets: Vec<String>,
 }
 
 fn values(entries: &[Entry]) -> Vec<String> {
@@ -131,18 +134,18 @@ impl Policy {
             // Letting sandboxed commands send Apple Events hands them an
             // unsandboxed code-execution path; keep it off.
             allow_apple_events: false,
-            allow_mach_lookup: values(&self.mach_lookup),
-            allow_unix_sockets: values(&self.unix_sockets),
-            allow_git_config: self.allow_git_config,
             filesystem: Filesystem {
                 deny_read: values(&self.deny_read),
                 allow_read: values(&self.allow_read),
                 allow_write: values(&self.allow_write),
                 deny_write: values(&self.deny_write),
+                allow_git_config: self.allow_git_config,
             },
             network: Network {
                 allowed_domains: values(&self.domains),
                 denied_domains: values(&self.denied_domains),
+                allow_mach_lookup: values(&self.mach_lookup),
+                allow_unix_sockets: values(&self.unix_sockets),
             },
         }
     }
@@ -274,8 +277,8 @@ mod tests {
     #[test]
     fn optional_switches_are_omitted_when_off() {
         let value = parse(&Policy::default());
-        assert!(value.get("allowUnixSockets").is_none());
-        assert!(value.get("allowGitConfig").is_none());
+        assert!(value["network"].get("allowUnixSockets").is_none());
+        assert!(value["filesystem"].get("allowGitConfig").is_none());
     }
 
     #[test]
@@ -283,17 +286,26 @@ mod tests {
         let policy = Policy {
             allow_git_config: true,
             unix_sockets: entries(&["/tmp/agent.sock"], Source::Config),
+            mach_lookup: entries(&["com.example.service"], Source::Config),
             ..Policy::default()
         };
         let value = parse(&policy);
-        assert_eq!(value["allowGitConfig"], Value::Bool(true));
-        assert_eq!(value["allowUnixSockets"][0], "/tmp/agent.sock");
+        // srt reads these from `filesystem` and `network`; at the top level
+        // they parse fine and do nothing.
+        assert_eq!(value["filesystem"]["allowGitConfig"], Value::Bool(true));
+        assert_eq!(value["network"]["allowUnixSockets"][0], "/tmp/agent.sock");
+        assert_eq!(
+            value["network"]["allowMachLookup"][0],
+            "com.example.service"
+        );
+        assert!(value.get("allowGitConfig").is_none());
+        assert!(value.get("allowUnixSockets").is_none());
     }
 
     #[test]
     fn empty_optional_arrays_are_omitted() {
         let value = parse(&Policy::default());
-        assert!(value.get("allowMachLookup").is_none());
+        assert!(value["network"].get("allowMachLookup").is_none());
         assert!(value["filesystem"].get("allowRead").is_none());
         assert!(value["filesystem"].get("denyRead").is_some());
         assert!(value["filesystem"].get("denyWrite").is_some());
