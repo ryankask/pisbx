@@ -23,9 +23,17 @@ pub fn locate(program: &str) -> Option<PathBuf> {
         .find(|candidate| is_executable(candidate))
 }
 
+/// srt filters egress by pointing `HTTP(S)_PROXY` at its localhost proxy and
+/// denying direct sockets. curl and git honour those variables; Node's built-in
+/// `fetch` does not, so inside the sandbox every request resolves the name
+/// itself and fails with `ENOTFOUND` even when the host is allowlisted.
+/// `NODE_USE_ENV_PROXY` (Node 24+) makes fetch use the proxy env like curl does.
+const NODE_ENV_PROXY: (&str, &str) = ("NODE_USE_ENV_PROXY", "1");
+
 /// Run srt with inherited stdio.
 pub fn run(settings: &Path, args: &[OsString]) -> std::io::Result<ExitStatus> {
     let mut command = std::process::Command::new("srt");
+    command.env(NODE_ENV_PROXY.0, NODE_ENV_PROXY.1);
     command.arg("-s").arg(settings).arg("--");
     command.args(args);
     command.status()
@@ -34,6 +42,7 @@ pub fn run(settings: &Path, args: &[OsString]) -> std::io::Result<ExitStatus> {
 /// Run a shell snippet inside the sandbox and return its combined output.
 pub fn capture(settings: &Path, cwd: &Path, script: &str) -> std::io::Result<String> {
     let output = std::process::Command::new("srt")
+        .env(NODE_ENV_PROXY.0, NODE_ENV_PROXY.1)
         .arg("-s")
         .arg(settings)
         .arg("-c")

@@ -134,6 +134,46 @@ fn load_config(path: Option<&Path>) -> Result<Option<config::Config>> {
     config::load(path).map_err(anyhow::Error::msg)
 }
 
+/// Keys inside the `[srt]` passthrough that name paths, so they get the same
+/// tilde and symlink treatment as the typed keys. Without this, `~/x` in one
+/// table and `~/x` in the other would resolve differently.
+const EXTRA_PATH_KEYS: &[(&str, &str)] = &[
+    ("filesystem", "allowRead"),
+    ("filesystem", "allowWrite"),
+    ("filesystem", "denyRead"),
+    ("filesystem", "denyWrite"),
+    ("network", "allowUnixSockets"),
+];
+
+fn expand_extra_paths(value: &mut serde_json::Value, target: &Path) {
+    for (section, key) in EXTRA_PATH_KEYS {
+        let Some(entries) = value
+            .get_mut(*section)
+            .and_then(|section| section.get_mut(*key))
+            .and_then(|value| value.as_array_mut())
+        else {
+            continue;
+        };
+
+        let mut expanded: Vec<serde_json::Value> = Vec::new();
+        for entry in entries.iter() {
+            let spellings: Vec<serde_json::Value> = match entry.as_str() {
+                Some(text) => paths::expand(text, target)
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+                None => vec![entry.clone()],
+            };
+            for spelling in spellings {
+                if !expanded.contains(&spelling) {
+                    expanded.push(spelling);
+                }
+            }
+        }
+        *entries = expanded;
+    }
+}
+
 /// Expand every entry into the path spellings to grant, keeping the source.
 fn expand(entries: impl IntoIterator<Item = String>, target: &Path, source: Source) -> Vec<Entry> {
     let mut out = Vec::new();
@@ -342,6 +382,7 @@ fn resolve(
         Some(srt) => serde_json::to_value(srt).unwrap_or(serde_json::Value::Null),
         None => serde_json::Value::Null,
     };
+    expand_extra_paths(&mut policy.extras, &target);
 
     let clipboard = cli
         .clipboard()
@@ -571,6 +612,32 @@ mod tests {
         let settings = resolved.policy.settings();
         assert!(settings.filesystem.allow_git_config);
         assert_eq!(settings.network.allow_unix_sockets, ["/tmp/agent.sock"]);
+    }
+
+    #[test]
+    fn passthrough_paths_get_the_same_treatment_as_typed_ones() {
+        let mut extras = serde_json::json!({
+            "filesystem": {"allowWrite": ["~/Projects", "relative"], "denyRead": []},
+            "network": {"allowUnixSockets": ["~/x.sock"]}
+        });
+        expand_extra_paths(&mut extras, Path::new("/srv"));
+
+        let writes = extras["filesystem"]["allowWrite"].as_array().unwrap();
+        assert!(
+            writes.iter().any(|entry| entry == "/srv/relative"),
+            "{writes:?}"
+        );
+        let home_entry = writes
+            .iter()
+            .filter_map(|entry| entry.as_str())
+            .find(|entry| entry.contains("/Projects"))
+            .expect("home path expanded");
+        assert!(home_entry.starts_with('/'), "{home_entry}");
+
+        let sockets = extras["network"]["allowUnixSockets"].as_array().unwrap();
+        assert!(sockets
+            .iter()
+            .any(|entry| entry.as_str().unwrap().starts_with('/')));
     }
 
     #[test]
