@@ -175,6 +175,7 @@ fn floor_writes(target: Option<&Path>) -> Vec<Entry> {
 struct Resolved {
     target: PathBuf,
     policy: Policy,
+    env: Vec<(String, String)>,
 }
 
 fn text_entries(entries: &[config::PathEntry]) -> Vec<String> {
@@ -201,9 +202,13 @@ fn resolve(
     let target =
         paths::resolve_dir(&target_arg).with_context(|| format!("{}", target_arg.display()))?;
 
+    let mut env_pairs: Vec<(String, String)> = Vec::new();
     let mut policy = Policy {
         read_only: cli.read_only,
-        trust: (cli.trust || env_flag("PISBX_TRUST", false)) && !cli.read_only,
+        trust: (cli.trust
+            || env_flag("PISBX_TRUST", false)
+            || loaded.map(|config| config.pisbx.trust).unwrap_or(false))
+            && !cli.read_only,
         ..Policy::default()
     };
 
@@ -386,6 +391,18 @@ fn resolve(
                 .map(|config| config.filesystem.allow_git_config)
                 .unwrap_or(false));
 
+    // [pisbx.env]: environment for the process srt launches, not for srt.
+    if let Some(config) = loaded {
+        for (key, value) in &config.pisbx.env {
+            let value = paths::expand(value, &target)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| value.clone());
+            policy.env.push(Entry::new(key.clone(), Source::Config));
+            env_pairs.push((key.clone(), value));
+        }
+    }
+
     // Everything pisbx does not interpret is forwarded as-is.
     let mut extras = serde_json::json!({});
     if let Some(config) = loaded {
@@ -402,7 +419,11 @@ fn resolve(
     }
     policy.extras = extras;
 
-    Ok(Resolved { target, policy })
+    Ok(Resolved {
+        target,
+        policy,
+        env: env_pairs,
+    })
 }
 
 fn main() {
@@ -537,7 +558,7 @@ fn run() -> Result<i32, Failure> {
         }
         argv.extend(tail);
 
-        let status = srt::run(file.path(), &argv)
+        let status = srt::run(file.path(), &argv, &resolved.env)
             .map_err(|error| Failure::dependency(format!("could not run srt: {error}")))?;
         Ok(status.code().unwrap_or(1))
     }
@@ -626,6 +647,52 @@ mod tests {
         let settings = resolved.policy.settings();
         assert!(settings.filesystem.allow_git_config);
         assert_eq!(settings.network.allow_unix_sockets, ["/tmp/agent.sock"]);
+    }
+
+    #[test]
+    fn pisbx_section_sets_trust_and_env_without_reaching_srt() {
+        let loaded = config::Config {
+            pisbx: config::Pisbx {
+                trust: true,
+                env: [(
+                    "SSH_AUTH_SOCK".to_string(),
+                    "~/Library/Group Containers/TEAM.app/t/agent.sock".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            },
+            ..config::Config::default()
+        };
+
+        let resolved = resolve(&Cli::default(), Some(&loaded), None).unwrap();
+        assert!(resolved.policy.trust, "trust comes from the file");
+        assert_eq!(resolved.env.len(), 1);
+        assert_eq!(resolved.env[0].0, "SSH_AUTH_SOCK");
+        assert!(resolved.env[0].1.starts_with('/'), "{:?}", resolved.env);
+        // Names only in the explanation, never values.
+        assert!(resolved
+            .policy
+            .env
+            .iter()
+            .any(|entry| entry.value == "SSH_AUTH_SOCK"));
+        assert!(!resolved.policy.extras.to_string().contains("SSH_AUTH_SOCK"));
+    }
+
+    #[test]
+    fn read_only_still_vetoes_config_trust() {
+        let loaded = config::Config {
+            pisbx: config::Pisbx {
+                trust: true,
+                ..config::Pisbx::default()
+            },
+            ..config::Config::default()
+        };
+        let cli = Cli {
+            read_only: true,
+            ..Cli::default()
+        };
+        let resolved = resolve(&cli, Some(&loaded), None).unwrap();
+        assert!(!resolved.policy.trust);
     }
 
     #[test]

@@ -30,12 +30,19 @@ pub fn locate(program: &str) -> Option<PathBuf> {
 /// `NODE_USE_ENV_PROXY` (Node 24+) makes fetch use the proxy env like curl does.
 const NODE_ENV_PROXY: (&str, &str) = ("NODE_USE_ENV_PROXY", "1");
 
-/// Run srt with inherited stdio.
-pub fn run(settings: &Path, args: &[OsString]) -> std::io::Result<ExitStatus> {
+/// Run srt with inherited stdio, adding the environment the policy asked for.
+/// srt passes its own environment on to the sandboxed command, which is how
+/// `[pisbx.env]` reaches pi.
+pub fn run(
+    settings: &Path,
+    args: &[OsString],
+    env: &[(String, String)],
+) -> std::io::Result<ExitStatus> {
     let mut command = std::process::Command::new("srt");
     command.env(NODE_ENV_PROXY.0, NODE_ENV_PROXY.1);
     command.arg("-s").arg(settings).arg("--");
     command.args(args);
+    command.envs(env.iter().map(|(key, value)| (key, value)));
     command.status()
 }
 

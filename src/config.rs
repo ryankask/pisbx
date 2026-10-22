@@ -6,6 +6,7 @@
 //! untouched, so an srt option pisbx has never heard of still works.
 
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_PATH: &str = ".config/pisbx/config.toml";
@@ -95,9 +96,23 @@ pub struct Network {
     pub rest: toml::Table,
 }
 
+/// Settings about how pisbx runs pi. Never forwarded to srt: `trust` becomes
+/// `--no-approve` (or not), and `env` is applied to the process srt launches.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Pisbx {
+    /// Load project `.pi` extensions, skills and prompts without asking.
+    pub trust: bool,
+    /// Environment variables for the sandboxed process. Names are shown by
+    /// `--explain`; values never are.
+    pub env: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Config {
+    #[serde(rename = "pisbx")]
+    pub pisbx: Pisbx,
     pub filesystem: Filesystem,
     pub network: Network,
     /// Settings pisbx does not model, forwarded to srt as-is.
@@ -223,6 +238,33 @@ deniedResolvedAddresses = ["10.0.0.0/8"]
             p("[network.tlsTerminate]\nexcludeDomains = [\"internal.example\"]\n").unwrap();
         assert!(config.network.rest.contains_key("tlsTerminate"));
         assert!(config.unknown_keys().is_empty());
+    }
+
+    #[test]
+    fn reads_the_pisbx_section() {
+        let config = p(r#"
+[pisbx]
+trust = true
+[pisbx.env]
+SSH_AUTH_SOCK = "~/Library/Group Containers/TEAM.app/t/agent.sock"
+PI_CLIPBOARD_OSC52 = "1"
+"#)
+        .unwrap();
+        assert!(config.pisbx.trust);
+        assert_eq!(config.pisbx.env.len(), 2);
+        assert!(
+            config.rest.is_empty(),
+            "pisbx settings must not be forwarded"
+        );
+    }
+
+    #[test]
+    fn unknown_pisbx_keys_are_an_error() {
+        let error = p("[pisbx]\ntrustt = true\n").unwrap_err();
+        assert!(
+            error.contains("trustt") || error.contains("unknown field"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -110,6 +110,25 @@ What pisbx does on top of whatever the file says:
   forwarded to srt and named in a warning, since srt would otherwise drop them
   silently.
 
+### pisbx's own settings
+
+A `[pisbx]` table holds the few decisions that are pisbx's rather than srt's.
+It is stripped before the settings document is built, so nothing here can be
+mistaken for an srt option, and unknown keys are an error.
+
+```toml
+[pisbx]
+trust = true                 # load project .pi extensions without asking
+
+[pisbx.env]                  # environment for the sandboxed process
+SSH_AUTH_SOCK = "~/Library/Group Containers/<TEAM>.<app>/t/agent.sock"
+```
+
+`[pisbx.env]` is what makes commit signing work without prefixing every command:
+srt cannot set environment for you, and the sandbox's own `SSH_AUTH_SOCK` is a
+launchd listener with no identities. `--explain` lists the variable names and
+never the values.
+
 ## Per-project policy
 
 There is no workspace config file, by design. Deltas are flags, in whatever

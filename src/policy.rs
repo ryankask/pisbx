@@ -78,6 +78,7 @@ pub struct Policy {
     pub allow_git_config: bool,
     /// Raw srt settings merged in add-only: arrays are unioned, objects merge,
     /// scalars never override what pisbx already decided.
+    pub env: Vec<Entry>,
     pub extras: serde_json::Value,
     pub read_only: bool,
     pub trust: bool,
@@ -269,6 +270,25 @@ impl Policy {
         section(&mut out, "network denied", &self.denied_domains, "none");
         section(&mut out, "mach lookups", &self.mach_lookup, "none");
         section(&mut out, "unix sockets", &self.unix_sockets, "none");
+
+        if !self.env.is_empty() {
+            // Names only: the values are the sandbox's business.
+            out.push_str("\nenvironment for the sandboxed process\n");
+            let width = self
+                .env
+                .iter()
+                .map(|entry| entry.value.len())
+                .max()
+                .unwrap_or(0);
+            for entry in &self.env {
+                out.push_str(&format!(
+                    "  {:<width$}  {}\n",
+                    entry.value,
+                    entry.source.label(),
+                    width = width
+                ));
+            }
+        }
 
         if !self.extras.is_null() {
             let merged: serde_json::Value =
