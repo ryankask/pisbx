@@ -47,6 +47,16 @@ pub fn checks(read_only: bool, extra_write: Option<&str>) -> Vec<Check> {
             command: "echo x > ~/.pi/agent/install/.pisbx-probe 2>&1".to_string(),
         },
         Check {
+            label: "write to pi bin blocked",
+            expected: "not permitted",
+            command: "mkdir -p ~/.pi/agent/bin 2>&1; echo x > ~/.pi/agent/bin/.pisbx-probe 2>&1".to_string(),
+        },
+        Check {
+            label: "write to pi git packages blocked",
+            expected: "not permitted",
+            command: "mkdir -p ~/.pi/agent/git 2>&1; echo x > ~/.pi/agent/git/.pisbx-probe 2>&1".to_string(),
+        },
+        Check {
             label: "write to mcp servers blocked",
             expected: "not permitted",
             command: "echo x > ~/.pi/agent/mcp.json 2>&1".to_string(),
@@ -147,6 +157,8 @@ mod tests {
                 "write in $HOME blocked",
                 "write to pi extensions blocked",
                 "write to pi install blocked",
+                "write to pi bin blocked",
+                "write to pi git packages blocked",
                 "write to mcp servers blocked",
                 "write to system prompt blocked",
                 "write to pi state allowed",
@@ -167,7 +179,7 @@ mod tests {
         let checks = checks(false, Some("/tmp/keep"));
         let last = checks.last().expect("probe check");
         assert!(last.command.contains("'/tmp/keep'"), "{:?}", last.command);
-        assert_eq!(checks.len(), 11);
+        assert_eq!(checks.len(), 13);
     }
 
     #[test]

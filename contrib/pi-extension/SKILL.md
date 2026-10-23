@@ -35,9 +35,10 @@ configured; if `git commit -S` fails, that grant is missing, not broken.
 
 - Everything inside the workspace: read, write, run builds and tests.
 - Write to pi's state directory (`~/.pi/agent`), except the parts that code the
-  next session would load — `extensions/`, `install/`, `mcp.json`, `skills/`,
-  `SYSTEM.md`, `APPEND_SYSTEM.md`, `AGENTS.md`, `prompts/`, `settings.json`.
-  Those are denied on purpose: writing them would arm the next session.
+  next session would load — `bin/`, `extensions/`, `git/`, `install/`,
+  `mcp.json`, `skills/`, `SYSTEM.md`, `APPEND_SYSTEM.md`, `AGENTS.md`,
+  `prompts/`, `settings.json`. Those are denied on purpose: writing them would
+  arm the next session.
 - Reach the hosts on the allowlist, including over SSH via git (srt injects the
   proxy command; a bare `ssh` is not proxied).
 

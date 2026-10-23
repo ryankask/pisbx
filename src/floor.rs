@@ -15,8 +15,12 @@ pub const WRITE_ROOTS: &[&str] = &["~/.pi/agent", "/private/tmp", "/private/var/
 /// startup and `install/` is the runtime it executes; either one writable means
 /// a sandboxed agent can arm the next session.
 pub const ALWAYS_DENY_WRITE: &[&str] = &[
-    // Code pi loads and runs in this or the next session.
+    // Code pi loads and runs in this or the next session. `bin/` holds the
+    // launcher and the fd/rg binaries pi puts on PATH; `git/` holds
+    // git-installed packages.
+    "~/.pi/agent/bin",
     "~/.pi/agent/extensions",
+    "~/.pi/agent/git",
     "~/.pi/agent/install",
     "~/.pi/agent/mcp.json",
     "~/.pi/agent/skills",
@@ -122,7 +126,9 @@ mod tests {
     #[test]
     fn always_denied_covers_the_escalation_paths() {
         for entry in [
+            "~/.pi/agent/bin",
             "~/.pi/agent/extensions",
+            "~/.pi/agent/git",
             "~/.pi/agent/install",
             "~/.pi/agent/mcp.json",
             "~/.pi/agent/skills",

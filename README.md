@@ -36,7 +36,7 @@ Nothing is allowed that pi does not need to start.
 | Surface | Default |
 |---|---|
 | Writes | the workspace, `~/.pi/agent`, `/private/tmp`, `/private/var/folders` |
-| Always denied writes | `~/.pi/agent/{extensions,install,mcp.json,skills,SYSTEM.md,APPEND_SYSTEM.md,AGENTS.md,AGENTS.override.md,CLAUDE.md,prompts,settings.json,keybindings.json,models.json,models-store.json,npm,web-search-cache}`, `~/.npm/_logs`, `~/.claude/debug`, the pisbx binary, the pisbx config |
+| Always denied writes | `~/.pi/agent/{bin,extensions,git,install,mcp.json,skills,SYSTEM.md,APPEND_SYSTEM.md,AGENTS.md,AGENTS.override.md,CLAUDE.md,prompts,settings.json,keybindings.json,models.json,models-store.json,npm,web-search-cache}`, `~/.npm/_logs`, `~/.claude/debug`, the pisbx binary, the pisbx config |
 | Reads | **home is closed**; open: the workspace, `~/.pi`, pi's runtime, and the directories on `$PATH` that live under `$HOME` |
 | Network | none |
 | Clipboard | off |
@@ -45,10 +45,15 @@ Nothing is allowed that pi does not need to start.
 
 Denying writes to `extensions/`, `install/`, `mcp.json` and `settings.json` is
 the highest-value part of the file: any of them writable means a sandboxed agent
-can arm the next session with code it chose. `SYSTEM.md`, `APPEND_SYSTEM.md`,
-`AGENTS.md` and `skills/` are the same argument for instructions — a write there
-is durable prompt injection. The floor exists to let a session run, not to let
-it persist.
+can arm the next session with code it chose. `bin/` holds pi's launcher and the
+`fd`/`rg` binaries it puts on PATH, and `git/` holds git-installed packages;
+either one writable is the same next-session code execution. `SYSTEM.md`,
+`APPEND_SYSTEM.md`, `AGENTS.md` and `skills/` are the same argument for
+instructions — a write there is durable prompt injection. The floor exists to
+let a session run, not to let it persist.
+
+Because `bin/` is denied, pi cannot auto-download `fd`/`rg` inside the
+sandbox. Install them on the host, or make sure they are already on `PATH`.
 
 `~/.pi/agent/auth.json` is the deliberate exception: pi rewrites it when OAuth
 tokens refresh, so it stays writable, and readable, inside the sandbox. A
@@ -278,6 +283,48 @@ they belong in CI rather than in `cargo test`.
   can rewrite its own history. Use pi's `--no-session` when audit matters.
 - The network allowlist keys on the CONNECT host, not TLS contents.
 - macOS only.
+
+## Sources for Seatbelt rules
+
+SBPL is sparsely documented, and the useful rules are the ones someone already
+debugged against a real toolchain. These are worth reading before writing a new
+rule or adding another path:
+
+- [srt's macOS profile generator](https://github.com/anthropics/sandbox-runtime/blob/main/src/sandbox/macos-sandbox-utils.ts)
+  — the code that actually builds the profile pisbx runs. Read it before
+  assuming a rule is additive or that a deny wins: it covers read/deny ordering,
+  symlink resolution, `.git/hooks` denies, and the startup Mach/sysctl set.
+- [agent-safehouse's profiles](https://github.com/eugene1g/agent-safehouse/tree/main/profiles)
+  — the best-maintained public collection. `00-base.sb` and
+  `10-system-runtime.sb` cover process, Mach and sysctl plumbing;
+  `30-toolchains/` has real mise, uv, Node/pnpm, Rust and Python paths;
+  `60-agents/pi.sb` covers pi's own state.
+- [OpenAI Codex's Seatbelt backend](https://github.com/openai/codex/blob/main/codex-rs/sandboxing/src/seatbelt.rs)
+  and its [`seatbelt_base_policy.sbpl`](https://github.com/openai/codex/blob/main/codex-rs/sandboxing/src/seatbelt_base_policy.sbpl)
+  — a deny-default read/write split with a carefully narrowed sysctl/Mach
+  allowlist.
+- [Gemini CLI's built-in profiles](https://github.com/google-gemini/gemini-cli/blob/main/packages/cli/src/utils/sandboxBuiltinProfiles.ts)
+  — permissive and restrictive variants; useful for Docker and credential
+  denies, plus the macOS service allowlist.
+- [agent-seatbelt](https://github.com/CJHwong/agent-seatbelt) — a small two-file
+  profile; strongest on secret read-denies (SSH, AWS, browser profiles, shell
+  history) and write-denies on shell init files and `.git/hooks`.
+- [PostHog's `dev-sandbox.sb`](https://github.com/PostHog/posthog/blob/master/bin/dev-sandbox.sb)
+  — a working dev-stack profile that denies home reads and re-opens the repo
+  plus toolchain caches.
+- [Chromium's macOS sandbox policies](https://source.chromium.org/chromium/chromium/src/+/main:sandbox/policy/mac/common.sb)
+  — where many base rules originated; authoritative, but larger than a
+  coding-agent policy needs.
+- [Harn's sandbox config census](https://harnlang.com/sandbox-config-census.html)
+  — measured toolchain config/cache paths per command. Path lists rather than
+  SBPL, but the best starting point when a new tool hits `EPERM`.
+- [Apple's Sandbox Guide](https://reverse.put.as/wp-content/uploads/2011/09/Apple-Sandbox-Guide-v1.0.pdf)
+  and `man sandbox-exec` — the syntax and operation names underneath all of
+  the above.
+
+Seatbelt is deny-by-default, so a profile is mostly a list of things that were
+allowed because a real command failed without them. Copy the structure and the
+reasoning, not the whole profile.
 
 ## Prior art
 
