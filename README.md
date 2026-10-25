@@ -36,7 +36,8 @@ Nothing is allowed that pi does not need to start.
 | Surface | Default |
 |---|---|
 | Writes | the workspace, `~/.pi/agent`, `/private/tmp`, `/private/var/folders` |
-| Always denied writes | `~/.pi/agent/{bin,extensions,git,install,mcp.json,skills,SYSTEM.md,APPEND_SYSTEM.md,AGENTS.md,AGENTS.override.md,CLAUDE.md,prompts,settings.json,keybindings.json,models.json,models-store.json,npm,web-search-cache}`, `~/.npm/_logs`, `~/.claude/debug`, the pisbx binary, the pisbx config |
+| Always denied writes | `~/.pi/agent/{bin,extensions,git,install,mcp.json,skills,SYSTEM.md,APPEND_SYSTEM.md,AGENTS.md,AGENTS.override.md,CLAUDE.md,prompts,settings.json,keybindings.json,models.json,models-store.json,npm,themes,trust.json,web-search-cache}`, `~/.npm/_logs`, `~/.claude/debug`, the pisbx binary, the pisbx config |
+| Always denied writes in the workspace | `.pi`, `.agents`, `AGENTS.md`, `AGENTS.MD`, `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.MD` |
 | Reads | **home is closed**; open: the workspace, `~/.pi`, pi's runtime, and the directories on `$PATH` that live under `$HOME` |
 | Network | none |
 | Clipboard | off |
@@ -50,6 +51,15 @@ it puts on PATH, and `git/` holds git-installed packages; either one writable is
 the same next-session code execution. A write to `SYSTEM.md`,
 `APPEND_SYSTEM.md`, `AGENTS.md` or `skills/` is durable prompt injection. The
 floor lets a session run; it does not let it persist.
+
+The same reasoning applies to project configuration in the workspace. `.pi`
+holds settings, MCP servers, system prompts, extensions, skills, prompts and
+themes; `.agents/skills` holds project skills; and the context files
+(`AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`) load without project trust.
+All are readable, so pi still uses them as project-level overrides, but they
+are deny-write: edit them on the host, not through the sandboxed agent. This
+also means `pi install --local`, `pi config --local` and `pi mcp add --local`
+cannot run inside the sandbox.
 
 Because `bin/` is denied, pi cannot auto-download `fd`/`rg` inside the
 sandbox. Install them on the host, or make sure they are already on `PATH`.

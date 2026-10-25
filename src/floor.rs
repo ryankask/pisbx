@@ -37,10 +37,32 @@ pub const ALWAYS_DENY_WRITE: &[&str] = &[
     "~/.pi/agent/models.json",
     "~/.pi/agent/models-store.json",
     "~/.pi/agent/npm",
+    "~/.pi/agent/themes",
+    "~/.pi/agent/trust.json",
     "~/.pi/agent/web-search-cache",
     // srt merges these convenience writes into every profile; deny wins.
     "~/.npm/_logs",
     "~/.claude/debug",
+];
+
+/// Never writable inside the workspace, whatever else grants it. Relative to
+/// the target directory: project `.pi` configuration and context files are read
+/// as project-level overrides, so a write is a next-session code path or
+/// durable prompt injection. Edit them on the host, not through the agent.
+pub const ALWAYS_DENY_WRITE_PROJECT: &[&str] = &[
+    // Project settings, MCP servers, system prompts, extensions, skills,
+    // prompts and themes. A bare `.pi` directory is inert to pi, but a
+    // writable one lets the agent create the rest.
+    ".pi",
+    // Project skills loaded from `.agents/skills` in the working directory.
+    ".agents",
+    // Context files: discovery does not require project trust, and a write
+    // here persists instructions into every later session in this tree.
+    "AGENTS.md",
+    "AGENTS.MD",
+    "AGENTS.override.md",
+    "CLAUDE.md",
+    "CLAUDE.MD",
 ];
 
 /// Executables whose install prefix pi needs readable.
@@ -134,8 +156,17 @@ mod tests {
             "~/.pi/agent/skills",
             "~/.pi/agent/SYSTEM.md",
             "~/.pi/agent/settings.json",
+            "~/.pi/agent/themes",
+            "~/.pi/agent/trust.json",
         ] {
             assert!(ALWAYS_DENY_WRITE.contains(&entry), "{entry}");
+        }
+    }
+
+    #[test]
+    fn project_config_is_always_denied() {
+        for entry in [".pi", ".agents", "AGENTS.md", "CLAUDE.md"] {
+            assert!(ALWAYS_DENY_WRITE_PROJECT.contains(&entry), "{entry}");
         }
     }
 

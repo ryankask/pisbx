@@ -261,6 +261,13 @@ fn resolve(
         &target,
         Source::Builtin,
     );
+    denied.extend(expand(
+        floor::ALWAYS_DENY_WRITE_PROJECT
+            .iter()
+            .map(|s| s.to_string()),
+        &target,
+        Source::Builtin,
+    ));
     if let Ok(executable) = std::env::current_exe() {
         if let Ok(executable) = std::fs::canonicalize(executable) {
             denied.push(Entry::new(executable.to_string_lossy(), Source::Builtin));
@@ -721,6 +728,39 @@ mod tests {
         assert!(with.iter().any(|entry| entry.value == "/tmp/project"));
         assert!(!without.iter().any(|entry| entry.value == "/tmp/project"));
         assert!(without.iter().all(|entry| entry.source == Source::Builtin));
+    }
+
+    #[test]
+    fn project_config_is_denied_relative_to_the_target() {
+        let dir = std::env::temp_dir().join(format!("pisbx-project-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = std::fs::canonicalize(&dir).unwrap();
+        let cli = Cli {
+            dir: Some(dir.clone()),
+            ..Cli::default()
+        };
+
+        let resolved = resolve(&cli, None, None).unwrap();
+        for entry in [
+            ".pi",
+            ".agents",
+            "AGENTS.md",
+            "AGENTS.override.md",
+            "CLAUDE.md",
+        ] {
+            let expected = target.join(entry).to_string_lossy().into_owned();
+            assert!(
+                resolved
+                    .policy
+                    .deny_write
+                    .iter()
+                    .any(|denied| denied.value == expected && denied.source == Source::Builtin),
+                "{entry} missing from {:?}",
+                resolved.policy.deny_write
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
