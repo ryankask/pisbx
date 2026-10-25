@@ -23,13 +23,15 @@ import { sandboxFooter } from "./footer.ts";
 const ACTIVE = process.env.PISBX_ACTIVE === "1";
 const SETTINGS_PATH = process.env.PISBX_SETTINGS;
 
-/** `nf-seti-lock`, one cell wide. See `footer.ts` for why not the 🔒 emoji. */
-const DEFAULT_LOCK = " \uE672";
+/** The 🔒 emoji: universally present, slightly clipped in a narrow-cell font. */
+const DEFAULT_LOCK = " 🔒";
 
 /**
- * The marker on the footer's first line. `PISBX_LOCK` swaps it, and `\uXXXX`,
- * `\u{XXXXX}` and `\xXX` escapes are expanded, so a glyph can be tried from a
- * shell without typing a private-use codepoint. An empty value drops it.
+ * The marker on the footer's first line. `PISBX_LOCK` swaps it for another
+ * glyph — a Nerd Font one renders in a single cell, which kitty never truncates
+ * — and `\uXXXX`, `\u{XXXXX}` and `\xXX` escapes are expanded, so a glyph can
+ * be tried from a shell without typing a private-use codepoint. An empty value
+ * drops it. See `footer.ts` for why the emoji clips.
  */
 function lock(): string {
 	const raw = process.env.PISBX_LOCK;

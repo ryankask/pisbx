@@ -2,14 +2,13 @@
 
 An extension and a skill that make the sandbox visible to the agent.
 
-- a **lock on the footer's first line** (`~/Projects/pisbx (main)` followed by
-  `nf-seti-lock`, in the same dim colour) so a session is never mistaken for an
-  unsandboxed one without paying a footer line for it. The glyph is private-use
-  and one cell wide on purpose: a colour emoji's bitmap is scaled to the cell
-  height and comes out wider than the two cells it is given in a narrow-cell
-  font, and kitty truncates rather than letting it overflow
-  (kovidgoyal/kitty#8838), which cut the right edge off the padlock. Set
-  `PISBX_LOCK` to use another glyph.
+- a **lock on the footer's first line** (`~/Projects/pisbx (main) 🔒`, in the
+  same dim colour) so a session is never mistaken for an unsandboxed one
+  without paying a footer line for it. The emoji is what every terminal has, but
+  its bitmap is scaled to the cell height and is wider than the two cells it is
+  given in a narrow-cell font, and kitty truncates rather than letting a glyph
+  overflow (kovidgoyal/kitty#8838) — so its right edge is clipped. `PISBX_LOCK`
+  takes a Nerd Font glyph instead, which is one cell wide and survives intact.
 - the footer reproduces pi's two default lines: `ctx.ui.setStatus()` can only
   add a line of its own, and the default footer component needs the session
   object an extension does not get. `contrib/pi-extension/footer.ts` mirrors
@@ -66,9 +65,9 @@ act.
 | `PISBX_SETTINGS` | the generated srt settings document for this run |
 | `PISBX_POLICY` | path to the policy file (not readable inside the sandbox) |
 | `PISBX_VERSION` | pisbx version |
-| `PISBX_LOCK` | yours to set: the footer's lock glyph, default a space plus `nf-seti-lock` |
+| `PISBX_LOCK` | yours to set: the footer's lock glyph, default a space plus `🔒` |
 
-`PISBX_LOCK` expands `\uXXXX`, `\u{XXXXX}` and `\xXX`, so another glyph can be
-tried from a shell without typing a private-use codepoint; an empty value drops
-the lock. `[pisbx.env]` cannot shadow these: `PISBX_*` is rejected in the policy
-file.
+`PISBX_LOCK` expands `\uXXXX`, `\u{XXXXX}` and `\xXX`, so a glyph such as
+`nf-seti-lock` can be tried from a shell without typing a private-use codepoint;
+an empty value drops the lock. `[pisbx.env]` cannot shadow these: `PISBX_*` is
+rejected in the policy file.
