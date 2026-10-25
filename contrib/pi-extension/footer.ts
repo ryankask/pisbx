@@ -11,6 +11,16 @@
  * cosmetic and deliberate: no subscription marker, no routed-model arrow, no
  * experimental-features badge. If pi's footer gains something worth having,
  * this is the file to update.
+ *
+ * The suffix is the caller's, and should be a Nerd Font (private-use) glyph
+ * rather than a colour emoji. A colour-emoji bitmap is scaled to the cell
+ * height, and the padlock's ink is 0.84 as wide as it is tall, so in a
+ * narrow-cell font (Iosevka at 7x18px leaves a two-cell slot of 0.78) the ink
+ * is wider than the two cells it is given. kitty never lets a glyph overflow:
+ * it rescales a large overlap and truncates a small one
+ * (kovidgoyal/kitty#8838), which cut the right edge off the lock. A
+ * private-use glyph is one cell wide, so there is nothing to cut, and as a text
+ * glyph it takes the dim colour instead of ignoring it.
  */
 
 import {
@@ -21,8 +31,6 @@ import {
 	type Theme,
 } from "@earendil-works/pi-tui";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-
-const LOCK = " 🔒";
 
 type Usage = {
 	input: number;

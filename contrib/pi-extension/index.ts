@@ -23,6 +23,24 @@ import { sandboxFooter } from "./footer.ts";
 const ACTIVE = process.env.PISBX_ACTIVE === "1";
 const SETTINGS_PATH = process.env.PISBX_SETTINGS;
 
+/** `nf-seti-lock`, one cell wide. See `footer.ts` for why not the 🔒 emoji. */
+const DEFAULT_LOCK = " \uE672";
+
+/**
+ * The marker on the footer's first line. `PISBX_LOCK` swaps it, and `\uXXXX`,
+ * `\u{XXXXX}` and `\xXX` escapes are expanded, so a glyph can be tried from a
+ * shell without typing a private-use codepoint. An empty value drops it.
+ */
+function lock(): string {
+	const raw = process.env.PISBX_LOCK;
+	if (raw === undefined) return DEFAULT_LOCK;
+	return raw.replace(
+		/\\u\{([0-9a-f]+)\}|\\u([0-9a-f]{4})|\\x([0-9a-f]{2})/gi,
+		(_match, braced: string | undefined, four: string | undefined, two: string | undefined) =>
+			String.fromCodePoint(Number.parseInt(braced ?? four ?? two!, 16)),
+	);
+}
+
 type Settings = {
 	filesystem?: {
 		allowRead?: string[];
@@ -103,7 +121,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
 		ctx.ui.setFooter((_tui, theme, footerData) =>
-			sandboxFooter(ctx, theme, footerData, { suffix: " 🔒" }),
+			sandboxFooter(ctx, theme, footerData, { suffix: lock() }),
 		);
 	});
 
