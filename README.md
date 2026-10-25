@@ -36,7 +36,7 @@ Nothing is allowed that pi does not need to start.
 | Surface | Default |
 |---|---|
 | Writes | the workspace, `~/.pi/agent`, `/private/tmp`, `/private/var/folders` |
-| Always denied writes | `~/.pi/agent/{bin,extensions,git,install,mcp.json,skills,SYSTEM.md,APPEND_SYSTEM.md,AGENTS.md,AGENTS.override.md,CLAUDE.md,prompts,settings.json,keybindings.json,models.json,models-store.json,npm,themes,trust.json,web-search-cache}`, `~/.npm/_logs`, `~/.claude/debug`, the pisbx binary, the pisbx config |
+| Always denied writes | `~/.pi/agent/{bin,extensions,git,install,mcp.json,skills,SYSTEM.md,APPEND_SYSTEM.md,AGENTS.md,AGENTS.override.md,CLAUDE.md,prompts,settings.json,keybindings.json,models.json,models-store.json,npm,themes,trust.json,web-search-cache,web-search.json}`, `~/.npm/_logs`, `~/.claude/debug`, the pisbx binary, the pisbx config |
 | Always denied writes in the workspace | `.pi`, `.agents`, `AGENTS.md`, `AGENTS.MD`, `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.MD` |
 | Reads | **home is closed**; open: the workspace, `~/.pi`, pi's runtime, and the directories on `$PATH` that live under `$HOME` |
 | Network | none |
@@ -44,11 +44,12 @@ Nothing is allowed that pi does not need to start.
 | Apple Events | off; allowing them is an unsandboxed code-execution path |
 | Project resources | refused (`--no-approve`), so a cloned repo cannot load extensions before you look |
 
-The most important denies are `extensions/`, `install/`, `mcp.json` and
-`settings.json`: any of them writable means a sandboxed agent can arm the next
-session with code it chose. `bin/` holds pi's launcher and the `fd`/`rg` binaries
-it puts on PATH, and `git/` holds git-installed packages; either one writable is
-the same next-session code execution. A write to `SYSTEM.md`,
+The most important denies are `extensions/`, `install/`, `mcp.json`,
+`settings.json` and `web-search.json`: any of them writable means a sandboxed
+agent can arm the next session with code, credentials or a proxy it chose.
+`bin/` holds pi's launcher and the `fd`/`rg` binaries it puts on PATH, and
+`git/` holds git-installed packages; either one writable is the same
+next-session code execution. A write to `SYSTEM.md`,
 `APPEND_SYSTEM.md`, `AGENTS.md` or `skills/` is durable prompt injection. The
 floor lets a session run; it does not let it persist.
 

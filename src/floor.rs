@@ -40,6 +40,7 @@ pub const ALWAYS_DENY_WRITE: &[&str] = &[
     "~/.pi/agent/themes",
     "~/.pi/agent/trust.json",
     "~/.pi/agent/web-search-cache",
+    "~/.pi/agent/web-search.json",
     // srt merges these convenience writes into every profile; deny wins.
     "~/.npm/_logs",
     "~/.claude/debug",
@@ -158,6 +159,7 @@ mod tests {
             "~/.pi/agent/settings.json",
             "~/.pi/agent/themes",
             "~/.pi/agent/trust.json",
+            "~/.pi/agent/web-search.json",
         ] {
             assert!(ALWAYS_DENY_WRITE.contains(&entry), "{entry}");
         }
