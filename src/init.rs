@@ -312,6 +312,14 @@ pub fn render(draft: &Draft) -> String {
     out.push_str("# means the agent sees whatever you copied, so this ships commented out.\n");
     out.push_str("# allowMachLookup = [\"com.apple.pasteboard.1\", \"com.apple.lsd.mapdb\", \"com.apple.lsd.modifydb\"]\n");
 
+    out.push_str("\n\n# Per-project deltas live here, keyed by the resolved project directory.\n");
+    out.push_str("# The repo never provides these, so a project cannot widen its own\n");
+    out.push_str("# sandbox. Keys are absolute, `~`, or start with `~/`.\n");
+    out.push_str("# [projects.\"~/Projects/example\".filesystem]\n");
+    out.push_str("# allowWrite = [\"~/.cargo\", \"target\"]\n");
+    out.push_str("# [projects.\"~/Projects/example\".network]\n");
+    out.push_str("# allowedDomains = [\"registry.npmjs.org\"]\n");
+
     out
 }
 

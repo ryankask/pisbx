@@ -93,9 +93,10 @@ pasteboard lets the agent see whatever you copied.
 
 ## Policy file
 
-One file, `~/.config/pisbx/config.toml`, written in **srt's own schema**, so
-there is no translation layer, and every option srt grows works here without a
-pisbx release. It is read from `$HOME`, never from the workspace: a cloned
+One file, `~/.config/pisbx/config.toml`, written in **srt's own schema** plus
+two pisbx-owned tables (`[pisbx]` and `[projects]`), so there is no translation
+layer for the srt keys and every option srt grows works here without a pisbx
+release. It is read from `$HOME`, never from the workspace: a cloned
 repository must not be able to widen its own sandbox, and the file is
 `deny-write` inside the sandbox so the agent cannot widen it either.
 
@@ -129,12 +130,14 @@ What pisbx does on top of whatever the file says:
   workspace, temp space, and the always-denied set (`extensions/`, `install/`,
   the policy file itself). No file entry can open those.
 - `--read-only` drops `allowWrite` and `allowGitConfig` for the run.
-- Precedence: `allowedDomains` is replaced, never extended. Flags beat the file,
-  and the file beats `PISBX_DOMAINS` in the environment, so an inherited
-  variable cannot quietly override policy you wrote.
+- Precedence: explicit domain sources accumulate. `allowedDomains` from the
+  file, the matching `[projects]` section, and `--domains` are unioned;
+  `PISBX_DOMAINS` applies only when none of them names a domain.
+  `deniedDomains` and `--deny-domains` also accumulate, and a denied domain
+  wins.
 - Unknown keys inside `filesystem` are an error; anywhere else they are
   forwarded to srt and named in a warning, since srt would otherwise drop them
-  silently.
+  silently. Inside `[projects]`, unknown keys are an error instead.
 
 ### pisbx's own settings
 
@@ -200,14 +203,52 @@ must be on; pisbx enforces that.
 
 ## Per-project policy
 
-There is no workspace config file, by design. Deltas are flags, in whatever
-wrapper you already run:
+Deltas live in the same host-owned file, keyed by the project directory. They
+are not in the repo, so a cloned project cannot widen its own sandbox:
 
-```bash
-pisbx --allow-write ~/.cargo --domains api.openai.com,registry.npmjs.org
+```toml
+[projects."~/Projects/foo".filesystem]
+allowWrite = ["~/.cargo", "target"]
+denyWrite = [".env"]
+
+[projects."~/Projects/foo".network]
+allowedDomains = ["registry.npmjs.org", "static.crates.io"]
+deniedDomains = ["*.internal.example"]
 ```
 
-Put that line in the repo's `justfile`, a shell function, or an alias.
+The key must be absolute, `~`, or start with `~/`, and it is resolved the way Seatbelt
+resolves a path: symlinks and case included. It must name the directory pisbx
+runs in exactly; there is no ancestor inheritance and no globbing, and two keys
+that resolve to the same directory are a config error. `--explain` prints the
+section that matched, or `none (N configured)`.
+
+A project section can set the filesystem lists, `allowGitConfig`, and the
+network lists (`allowedDomains`, `deniedDomains`, `allowUnixSockets`,
+`allowMachLookup`). It cannot set `[pisbx]` settings or change scalar srt
+switches, and unknown keys are an error rather than being forwarded.
+
+Lists add to the global policy, and denies always win, so a project can narrow a
+global grant by denying a path or domain. The built-in denies on project agent
+configuration (`.pi`, `.agents`, `AGENTS.md`, and the rest of
+`ALWAYS_DENY_WRITE_PROJECT`) still win, so a project section cannot reopen
+writing to its own instructions. Explicit domain sources — the global file, the
+matching project section, and `--domains` — accumulate; `PISBX_DOMAINS` is used
+only when none of them names a domain. `--deny-domains` subtracts for a run.
+`--read-only` still drops every write.
+
+Because the section is host-authored, it can grant more than the global policy.
+The repo cannot provide or edit it, and the sandboxed agent cannot widen it.
+Renaming or moving a project means updating its key.
+
+One-off deltas are still flags:
+
+```bash
+pisbx --allow-write ~/.cargo --domains registry.npmjs.org
+```
+
+Put that line in a shell function or an alias. Do not put a widening flag in the
+repo's own `justfile`: the sandboxed agent can edit the justfile, and you would
+be the one running it.
 
 ## Commands
 
@@ -215,10 +256,12 @@ Put that line in the repo's `justfile`, a shell function, or an alias.
 |---|---|
 | `pisbx [options] [--] [pi args…]` | run pi under the sandbox |
 | `pisbx --init [--force]` | write a starter policy; never clobbers without `--force` |
-| `pisbx --explain` | the effective policy, with `built-in` / `config` / `flag` on every entry |
+| `pisbx --explain` | the effective policy, with `built-in` / `config` / `project` / `flag` on every entry |
 | `pisbx --print-config` | the srt settings document (JSON) |
 | `pisbx --selftest` | run real commands through srt and assert what actually happens |
 | `pisbx --read-only` | keep every write except pi's state directory |
+| `pisbx --domains <list>` | add explicit allowlist domains for this run |
+| `pisbx --deny-domains <list>` | block those domains for this run (wins over allowed) |
 | `pisbx --clipboard` | allow the pasteboard for this run |
 | `pisbx --allow-git-config` | let this run write `.git/config` (hooks stay denied) |
 | `pisbx --allow-unix-sockets <paths>` | let this run connect to those sockets |

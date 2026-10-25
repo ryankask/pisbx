@@ -16,6 +16,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--deny-read",
     "--deny-write",
     "--domains",
+    "--deny-domains",
     "--allow-unix-sockets",
     "--why",
     "--op",
@@ -49,9 +50,10 @@ const BOOL_FLAGS: &[&str] = &[
                   Paths may be absolute, start with ~, or be relative to the target.\n\
                   Lists are comma separated, and flags may be repeated.\n\
                   \n\
-                  Environment (fallbacks for aliases; flags win):\n\
+                  Environment (fallbacks for aliases):\n\
                   \x20 PISBX_DIR, PISBX_ALLOW_WRITE, PISBX_ALLOW_READ, PISBX_DENY_READ,\n\
-                  \x20 PISBX_DOMAINS, PISBX_CLIPBOARD, PISBX_TRUST, PISBX_KEEP_TEMP, PISBX_CONFIG"
+                  \x20 PISBX_DOMAINS, PISBX_DENY_DOMAINS, PISBX_CLIPBOARD, PISBX_TRUST,\n\
+                  \x20 PISBX_KEEP_TEMP, PISBX_CONFIG"
 )]
 pub struct Cli {
     /// Directory to sandbox (default: current directory)
@@ -74,9 +76,13 @@ pub struct Cli {
     #[arg(long = "deny-write", value_name = "PATHS", value_delimiter = ',')]
     pub deny_write: Vec<String>,
 
-    /// Replace the policy file's domain list for this run
+    /// Add to the explicit domain list for this run
     #[arg(long, value_name = "LIST", value_delimiter = ',')]
     pub domains: Vec<String>,
+
+    /// Deny these domains for this run (wins over allowed)
+    #[arg(long = "deny-domains", value_name = "LIST", value_delimiter = ',')]
+    pub deny_domains: Vec<String>,
 
     /// Allow unix socket connections at these paths
     #[arg(
@@ -289,6 +295,18 @@ mod tests {
         let (cli, _) = p(&["--allow-unix-sockets", "/tmp/a.sock,/tmp/b.sock"]);
         assert_eq!(cli.allow_unix_sockets, ["/tmp/a.sock", "/tmp/b.sock"]);
         assert!(p(&["--allow-git-config"]).0.allow_git_config);
+    }
+
+    #[test]
+    fn domain_flags_accumulate() {
+        let (cli, _) = p(&[
+            "--domains",
+            "api.example,extra.example",
+            "--deny-domains",
+            "blocked.example",
+        ]);
+        assert_eq!(cli.domains, ["api.example", "extra.example"]);
+        assert_eq!(cli.deny_domains, ["blocked.example"]);
     }
 
     #[test]

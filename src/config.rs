@@ -116,6 +116,28 @@ pub struct Pisbx {
     pub credential_proxy_port: Option<u16>,
 }
 
+/// A per-project policy section, keyed in `[projects]` by the resolved
+/// directory it applies to. Unlike the top-level tables, unknown keys here are
+/// an error and there is no srt passthrough: the section may only add the
+/// modelled lists and `allowGitConfig`.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Project {
+    pub filesystem: Filesystem,
+    pub network: ProjectNetwork,
+}
+
+/// The network settings a project section may set. Scalar srt switches stay
+/// host-global, so a project cannot change them by accident or by review slip.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProjectNetwork {
+    pub allowed_domains: Vec<String>,
+    pub denied_domains: Vec<String>,
+    pub allow_unix_sockets: Vec<PathEntry>,
+    pub allow_mach_lookup: Vec<String>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Config {
@@ -123,6 +145,10 @@ pub struct Config {
     pub pisbx: Pisbx,
     pub filesystem: Filesystem,
     pub network: Network,
+    /// Per-project deltas, keyed by a `~` or absolute path. Host-authored: the
+    /// file is read from `$HOME`, never from the workspace, so a cloned repo
+    /// cannot add one.
+    pub projects: BTreeMap<String, Project>,
     /// Settings pisbx does not model, forwarded to srt as-is.
     #[serde(flatten)]
     pub rest: toml::Table,
@@ -147,6 +173,31 @@ impl Config {
     }
 
     fn validate(&self, source: &Path) -> Result<(), String> {
+        let mut resolved: BTreeMap<String, &str> = BTreeMap::new();
+        for key in self.projects.keys() {
+            let anchored = key == "~" || key.starts_with("~/") || Path::new(key).is_absolute();
+            if !anchored {
+                return Err(format!(
+                    "{}: projects.{key:?}: project keys must be absolute, `~`, or start with `~/`",
+                    source.display()
+                ));
+            }
+            if crate::paths::has_glob(key) {
+                return Err(format!(
+                    "{}: projects.{key:?}: project keys must name one directory, not a glob",
+                    source.display()
+                ));
+            }
+            let resolved_key = crate::paths::expand(key, Path::new("/"))
+                .pop()
+                .unwrap_or_else(|| key.clone());
+            if let Some(previous) = resolved.insert(resolved_key.clone(), key) {
+                return Err(format!(
+                    "{}: projects.{previous:?} and projects.{key:?} both resolve to {resolved_key}",
+                    source.display()
+                ));
+            }
+        }
         for (index, name) in self.pisbx.unset.iter().enumerate() {
             if !Self::valid_name(name) {
                 return Err(format!(
@@ -406,6 +457,73 @@ PI_CLIPBOARD_OSC52 = "1"
 
         let config = p("[network]\nallowLocalBindings = true\n").unwrap();
         assert_eq!(config.unknown_keys(), ["network.allowLocalBindings"]);
+    }
+
+    #[test]
+    fn reads_project_sections() {
+        let config = p(r#"
+[projects."~/Projects/foo".filesystem]
+allowWrite = ["~/.cargo"]
+denyWrite = [".env"]
+allowGitConfig = true
+
+[projects."~/Projects/foo".network]
+allowedDomains = ["registry.npmjs.org"]
+deniedDomains = ["*.internal.example"]
+allowUnixSockets = ["/tmp/agent.sock"]
+allowMachLookup = ["com.apple.pasteboard.1"]
+"#)
+        .unwrap();
+
+        let project = config
+            .projects
+            .get("~/Projects/foo")
+            .expect("project section");
+        assert_eq!(project.filesystem.allow_write[0].text(), "~/.cargo");
+        assert_eq!(project.filesystem.deny_write[0].text(), ".env");
+        assert!(project.filesystem.allow_git_config);
+        assert_eq!(project.network.allowed_domains, ["registry.npmjs.org"]);
+        assert_eq!(project.network.denied_domains, ["*.internal.example"]);
+        assert_eq!(
+            project.network.allow_unix_sockets[0].text(),
+            "/tmp/agent.sock"
+        );
+        assert_eq!(
+            project.network.allow_mach_lookup,
+            ["com.apple.pasteboard.1"]
+        );
+        assert!(config.rest.is_empty(), "projects must not be forwarded");
+    }
+
+    #[test]
+    fn project_keys_must_be_absolute_or_tilde() {
+        for key in ["relative/path", "../up", "~user/foo", "~/*"] {
+            let error = p(&format!("[projects.{key:?}]\n")).unwrap_err();
+            assert!(error.contains("project keys"), "{key}: {error}");
+        }
+    }
+
+    #[test]
+    fn unknown_project_keys_error_instead_of_forwarding() {
+        let error = p("[projects.\"~/foo\"]\nallowWrite = [\"/x\"]\n").unwrap_err();
+        assert!(
+            error.contains("allowWrite") || error.contains("unknown field"),
+            "{error}"
+        );
+
+        let error = p("[projects.\"~/foo\".network]\nallowLocalBinding = true\n").unwrap_err();
+        assert!(
+            error.contains("allowLocalBinding") || error.contains("unknown field"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn duplicate_project_keys_are_a_config_error() {
+        let error = p("[projects.\"/tmp/pisbx-duplicate-project\"]\n\
+             [projects.\"/tmp/pisbx-duplicate-project/\"]\n")
+        .unwrap_err();
+        assert!(error.contains("both resolve"), "{error}");
     }
 
     #[test]

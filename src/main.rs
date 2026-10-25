@@ -193,6 +193,7 @@ fn floor_writes(target: Option<&Path>) -> Vec<Entry> {
     entries
 }
 
+#[derive(Debug)]
 struct Resolved {
     target: PathBuf,
     policy: Policy,
@@ -205,6 +206,44 @@ fn text_entries(entries: &[config::PathEntry]) -> Vec<String> {
         .iter()
         .map(|entry| entry.text().to_string())
         .collect()
+}
+
+/// The path a `[projects]` key names, resolved the way Seatbelt sees it.
+fn project_path(key: &str, target: &Path) -> String {
+    paths::expand(key, target)
+        .pop()
+        .unwrap_or_else(|| key.to_string())
+}
+
+/// The one project section that applies to this run, if any. Matching is an
+/// exact comparison of resolved directories: no ancestors, no globs.
+fn matching_project<'a>(
+    config: &'a config::Config,
+    target: &Path,
+) -> Result<Option<(&'a str, &'a config::Project)>> {
+    let target_text = target.to_string_lossy();
+    let matched: Vec<(&str, &config::Project)> = config
+        .projects
+        .iter()
+        .filter(|(key, _)| project_path(key, target) == target_text.as_ref())
+        .map(|(key, project)| (key.as_str(), project))
+        .collect();
+
+    match matched.as_slice() {
+        [] => Ok(None),
+        [(key, project)] => Ok(Some((*key, *project))),
+        _ => {
+            let keys = matched
+                .iter()
+                .map(|(key, _)| format!("projects.{key:?}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "{keys} all resolve to {}; keep one project section per directory",
+                target.display()
+            )
+        }
+    }
 }
 
 fn resolve(
@@ -224,6 +263,12 @@ fn resolve(
     let target =
         paths::resolve_dir(&target_arg).with_context(|| format!("{}", target_arg.display()))?;
 
+    let project = match loaded {
+        Some(config) => matching_project(config, &target)?,
+        None => None,
+    };
+    let project_policy = project.map(|(_, project)| project);
+
     let mut env_pairs: Vec<(String, String)> = Vec::new();
     let mut unset_names: Vec<String> = Vec::new();
     let mut policy = Policy {
@@ -232,6 +277,8 @@ fn resolve(
             || env_flag("PISBX_TRUST", false)
             || loaded.map(|config| config.pisbx.trust).unwrap_or(false))
             && !cli.read_only,
+        project: project.map(|(key, _)| key.to_string()),
+        project_count: loaded.map(|config| config.projects.len()).unwrap_or(0),
         ..Policy::default()
     };
 
@@ -250,6 +297,13 @@ fn resolve(
                 text_entries(&config.filesystem.allow_write),
                 &target,
                 Source::Config,
+            ));
+        }
+        if let Some(project) = project_policy {
+            writes.extend(expand(
+                text_entries(&project.filesystem.allow_write),
+                &target,
+                Source::Project,
             ));
         }
     }
@@ -291,6 +345,13 @@ fn resolve(
             Source::Config,
         ));
     }
+    if let Some(project) = project_policy {
+        denied.extend(expand(
+            text_entries(&project.filesystem.deny_write),
+            &target,
+            Source::Project,
+        ));
+    }
     merge(&mut policy.deny_write, denied);
 
     // Reads: home is closed, then the floor re-opens what pi needs.
@@ -310,6 +371,13 @@ fn resolve(
             text_entries(&config.filesystem.allow_read),
             &target,
             Source::Config,
+        ));
+    }
+    if let Some(project) = project_policy {
+        reads.extend(expand(
+            text_entries(&project.filesystem.allow_read),
+            &target,
+            Source::Project,
         ));
     }
     merge(&mut policy.allow_read, reads);
@@ -332,31 +400,67 @@ fn resolve(
             ),
         );
     }
-
-    // Network: the list is replaced, never extended. Flags win, then the file,
-    // then the environment, so an inherited PISBX_DOMAINS cannot override a
-    // policy you wrote.
-    let domains = if !cli.domains.is_empty() {
-        literal(cli.domains.iter().cloned(), Source::Flag)
-    } else if let Some(config) = loaded.filter(|config| !config.network.allowed_domains.is_empty())
-    {
-        literal(
-            config.network.allowed_domains.iter().cloned(),
-            Source::Config,
-        )
-    } else {
-        literal(env_list("PISBX_DOMAINS"), Source::Env)
-    };
-    merge(&mut policy.domains, domains);
-    if let Some(config) = loaded {
+    if let Some(project) = project_policy {
         merge(
-            &mut policy.denied_domains,
-            literal(
-                config.network.denied_domains.iter().cloned(),
-                Source::Config,
+            &mut policy.deny_read,
+            expand(
+                text_entries(&project.filesystem.deny_read),
+                &target,
+                Source::Project,
             ),
         );
     }
+
+    // Network allows accumulate across explicit sources: the file, the matching
+    // project section, and flags. The inherited environment list is only a
+    // fallback, so a stray export cannot widen a policy you wrote.
+    let mut explicit_domains: Vec<Entry> = Vec::new();
+    if let Some(config) = loaded {
+        explicit_domains.extend(literal(
+            config.network.allowed_domains.iter().cloned(),
+            Source::Config,
+        ));
+    }
+    if let Some(project) = project_policy {
+        explicit_domains.extend(literal(
+            project.network.allowed_domains.iter().cloned(),
+            Source::Project,
+        ));
+    }
+    if !explicit_domains.is_empty() {
+        merge(&mut policy.domains, explicit_domains);
+        merge(
+            &mut policy.domains,
+            literal(cli.domains.iter().cloned(), Source::Flag),
+        );
+    } else if !cli.domains.is_empty() {
+        merge(
+            &mut policy.domains,
+            literal(cli.domains.iter().cloned(), Source::Flag),
+        );
+    } else {
+        merge(
+            &mut policy.domains,
+            literal(env_list("PISBX_DOMAINS"), Source::Env),
+        );
+    }
+
+    // Denies always win over allows, whichever source they came from.
+    let mut denied_domains = literal(env_list("PISBX_DENY_DOMAINS"), Source::Env);
+    denied_domains.extend(literal(cli.deny_domains.iter().cloned(), Source::Flag));
+    if let Some(config) = loaded {
+        denied_domains.extend(literal(
+            config.network.denied_domains.iter().cloned(),
+            Source::Config,
+        ));
+    }
+    if let Some(project) = project_policy {
+        denied_domains.extend(literal(
+            project.network.denied_domains.iter().cloned(),
+            Source::Project,
+        ));
+    }
+    merge(&mut policy.denied_domains, denied_domains);
 
     merge(
         &mut policy.unix_sockets,
@@ -380,6 +484,16 @@ fn resolve(
             ),
         );
     }
+    if let Some(project) = project_policy {
+        merge(
+            &mut policy.unix_sockets,
+            expand(
+                text_entries(&project.network.allow_unix_sockets),
+                &target,
+                Source::Project,
+            ),
+        );
+    }
 
     // Pasteboard: whatever the file lists, plus the built-in trio when asked
     // for, minus it when explicitly refused.
@@ -389,6 +503,15 @@ fn resolve(
             literal(
                 config.network.allow_mach_lookup.iter().cloned(),
                 Source::Config,
+            ),
+        );
+    }
+    if let Some(project) = project_policy {
+        merge(
+            &mut policy.mach_lookup,
+            literal(
+                project.network.allow_mach_lookup.iter().cloned(),
+                Source::Project,
             ),
         );
     }
@@ -419,6 +542,9 @@ fn resolve(
             || env_flag("PISBX_ALLOW_GIT_CONFIG", false)
             || loaded
                 .map(|config| config.filesystem.allow_git_config)
+                .unwrap_or(false)
+            || project_policy
+                .map(|project| project.filesystem.allow_git_config)
                 .unwrap_or(false));
 
     // [pisbx.env]: environment for the process srt launches, not for srt.
@@ -728,6 +854,269 @@ mod tests {
         assert!(with.iter().any(|entry| entry.value == "/tmp/project"));
         assert!(!without.iter().any(|entry| entry.value == "/tmp/project"));
         assert!(without.iter().all(|entry| entry.source == Source::Builtin));
+    }
+
+    #[test]
+    fn matching_project_contributes_policy() {
+        let dir = std::env::temp_dir().join(format!("pisbx-project-match-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = std::fs::canonicalize(&dir).unwrap();
+        let key = target.to_string_lossy().into_owned();
+
+        let project = config::Project {
+            filesystem: config::Filesystem {
+                allow_write: vec![config::PathEntry::Plain("cache".into())],
+                deny_write: vec![config::PathEntry::Plain(".env".into())],
+                allow_read: vec![config::PathEntry::Plain("vendor".into())],
+                deny_read: vec![config::PathEntry::Plain("secret".into())],
+                allow_git_config: true,
+            },
+            network: config::ProjectNetwork {
+                allowed_domains: vec!["registry.example".into()],
+                denied_domains: vec!["bad.example".into()],
+                allow_unix_sockets: vec![config::PathEntry::Plain("/tmp/agent.sock".into())],
+                allow_mach_lookup: vec!["com.example.service".into()],
+            },
+        };
+        let loaded = config::Config {
+            network: config::Network {
+                allowed_domains: vec!["api.example".into()],
+                ..config::Network::default()
+            },
+            projects: [(key.clone(), project)].into_iter().collect(),
+            ..config::Config::default()
+        };
+        let cli = Cli {
+            dir: Some(dir.clone()),
+            domains: vec!["extra.example".into()],
+            deny_domains: vec!["blocked.example".into()],
+            ..Cli::default()
+        };
+
+        let resolved = resolve(&cli, Some(&loaded), None).unwrap();
+        assert_eq!(resolved.policy.project.as_deref(), Some(key.as_str()));
+        assert_eq!(resolved.policy.project_count, 1);
+
+        let expected = target.join("cache").to_string_lossy().into_owned();
+        assert!(
+            resolved
+                .policy
+                .allow_write
+                .iter()
+                .any(|e| e.value == expected && e.source == Source::Project),
+            "cache missing from {:?}",
+            resolved.policy.allow_write
+        );
+        for (entry, list) in [
+            (".env", &resolved.policy.deny_write),
+            ("vendor", &resolved.policy.allow_read),
+            ("secret", &resolved.policy.deny_read),
+        ] {
+            let expected = target.join(entry).to_string_lossy().into_owned();
+            assert!(
+                list.iter()
+                    .any(|e| e.value == expected && e.source == Source::Project),
+                "{entry} missing from {list:?}"
+            );
+        }
+
+        // Explicit domain sources accumulate; flags add to them.
+        for domain in ["api.example", "registry.example"] {
+            assert!(
+                resolved.policy.domains.iter().any(|e| e.value == domain),
+                "{domain} missing from {:?}",
+                resolved.policy.domains
+            );
+        }
+        assert!(resolved
+            .policy
+            .domains
+            .iter()
+            .any(|e| e.value == "extra.example" && e.source == Source::Flag));
+        assert!(resolved
+            .policy
+            .denied_domains
+            .iter()
+            .any(|e| e.value == "bad.example" && e.source == Source::Project));
+        assert!(resolved
+            .policy
+            .denied_domains
+            .iter()
+            .any(|e| e.value == "blocked.example" && e.source == Source::Flag));
+        assert!(resolved
+            .policy
+            .unix_sockets
+            .iter()
+            .any(|e| e.value == "/tmp/agent.sock" && e.source == Source::Project));
+        assert!(resolved
+            .policy
+            .mach_lookup
+            .iter()
+            .any(|e| e.value == "com.example.service" && e.source == Source::Project));
+        assert!(resolved.policy.allow_git_config);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn project_policy_does_not_leak_to_other_directories() {
+        let dir =
+            std::env::temp_dir().join(format!("pisbx-project-nomatch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = std::fs::canonicalize(&dir).unwrap();
+        let key = target.join("somewhere-else").to_string_lossy().into_owned();
+        let loaded = config::Config {
+            projects: [(
+                key,
+                config::Project {
+                    network: config::ProjectNetwork {
+                        allowed_domains: vec!["registry.example".into()],
+                        ..config::ProjectNetwork::default()
+                    },
+                    ..config::Project::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..config::Config::default()
+        };
+        let cli = Cli {
+            dir: Some(dir.clone()),
+            ..Cli::default()
+        };
+
+        let resolved = resolve(&cli, Some(&loaded), None).unwrap();
+        assert_eq!(resolved.policy.project, None);
+        assert_eq!(resolved.policy.project_count, 1);
+        assert!(
+            resolved
+                .policy
+                .domains
+                .iter()
+                .all(|e| e.value != "registry.example"),
+            "{:?}",
+            resolved.policy.domains
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tilde_project_key_matches_the_home_directory() {
+        let Some(home) = paths::home() else { return };
+        let loaded = config::Config {
+            projects: [("~".to_string(), config::Project::default())]
+                .into_iter()
+                .collect(),
+            ..config::Config::default()
+        };
+        let cli = Cli {
+            dir: Some(home),
+            ..Cli::default()
+        };
+
+        let resolved = resolve(&cli, Some(&loaded), None).unwrap();
+        assert_eq!(resolved.policy.project.as_deref(), Some("~"));
+    }
+
+    #[test]
+    fn two_project_keys_for_one_directory_are_an_error() {
+        let dir = std::env::temp_dir().join(format!("pisbx-project-dupe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = std::fs::canonicalize(&dir).unwrap();
+        let first = target.to_string_lossy().into_owned();
+        let second = format!("{first}/");
+        let loaded = config::Config {
+            projects: [
+                (first, config::Project::default()),
+                (second, config::Project::default()),
+            ]
+            .into_iter()
+            .collect(),
+            ..config::Config::default()
+        };
+        let cli = Cli {
+            dir: Some(dir.clone()),
+            ..Cli::default()
+        };
+
+        let error = resolve(&cli, Some(&loaded), None).unwrap_err().to_string();
+        assert!(error.contains("resolve"), "{error}");
+        assert!(error.contains("project section"), "{error}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_only_drops_project_writes_but_keeps_denies() {
+        let dir = std::env::temp_dir().join(format!("pisbx-project-ro-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = std::fs::canonicalize(&dir).unwrap();
+        let key = target.to_string_lossy().into_owned();
+        let loaded = config::Config {
+            projects: [(
+                key,
+                config::Project {
+                    filesystem: config::Filesystem {
+                        allow_write: vec![config::PathEntry::Plain("cache".into())],
+                        deny_write: vec![config::PathEntry::Plain(".env".into())],
+                        allow_git_config: true,
+                        ..config::Filesystem::default()
+                    },
+                    ..config::Project::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..config::Config::default()
+        };
+        let cli = Cli {
+            dir: Some(dir.clone()),
+            read_only: true,
+            ..Cli::default()
+        };
+
+        let resolved = resolve(&cli, Some(&loaded), None).unwrap();
+        assert!(resolved
+            .policy
+            .allow_write
+            .iter()
+            .all(|e| e.source != Source::Project));
+        assert!(resolved
+            .policy
+            .deny_write
+            .iter()
+            .any(|e| e.value == target.join(".env").to_string_lossy()));
+        assert!(!resolved.policy.allow_git_config);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_domains_accumulate_across_file_and_flag() {
+        let loaded = config::Config {
+            network: config::Network {
+                allowed_domains: vec!["api.example".into()],
+                ..config::Network::default()
+            },
+            ..config::Config::default()
+        };
+        let cli = Cli {
+            domains: vec!["extra.example".into()],
+            ..Cli::default()
+        };
+
+        let resolved = resolve(&cli, Some(&loaded), None).unwrap();
+        assert!(resolved
+            .policy
+            .domains
+            .iter()
+            .any(|e| e.value == "api.example" && e.source == Source::Config));
+        assert!(resolved
+            .policy
+            .domains
+            .iter()
+            .any(|e| e.value == "extra.example" && e.source == Source::Flag));
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub const CLIPBOARD_MACH_SERVICES: &[&str] = &[
 pub enum Source {
     Builtin,
     Config,
+    Project,
     Env,
     Flag,
 }
@@ -30,6 +31,7 @@ impl Source {
         match self {
             Source::Builtin => "built-in",
             Source::Config => "config",
+            Source::Project => "project",
             Source::Env => "env",
             Source::Flag => "flag",
         }
@@ -83,6 +85,10 @@ pub struct Policy {
     pub extras: serde_json::Value,
     pub read_only: bool,
     pub trust: bool,
+    /// The `[projects]` key that applied to this run, if any.
+    pub project: Option<String>,
+    /// How many project sections the policy file configured.
+    pub project_count: usize,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -352,6 +358,15 @@ impl Policy {
             }
         ));
 
+        if let Some(project) = &self.project {
+            out.push_str(&format!("\nproject {project}\n"));
+        } else if self.project_count > 0 {
+            out.push_str(&format!(
+                "\nproject none ({} configured)\n",
+                self.project_count
+            ));
+        }
+
         match config {
             Some(path) if path.exists() => out.push_str(&format!("\nconfig  {}\n", path.display())),
             Some(path) => out.push_str(&format!(
@@ -591,5 +606,26 @@ mod tests {
         };
         let text = policy.explain(Path::new("/t"), None);
         assert!(text.contains("git config writable"), "{text}");
+    }
+
+    #[test]
+    fn explain_names_the_matched_project() {
+        let policy = Policy {
+            project: Some("~/Projects/foo".to_string()),
+            project_count: 2,
+            ..Policy::default()
+        };
+        let text = policy.explain(Path::new("/t"), None);
+        assert!(text.contains("project ~/Projects/foo"), "{text}");
+    }
+
+    #[test]
+    fn explain_reports_unmatched_project_sections() {
+        let policy = Policy {
+            project_count: 2,
+            ..Policy::default()
+        };
+        let text = policy.explain(Path::new("/t"), None);
+        assert!(text.contains("project none (2 configured)"), "{text}");
     }
 }
